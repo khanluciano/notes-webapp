@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"text/template"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -33,18 +34,27 @@ type DashData struct {
 }
 
 var db *sql.DB
-var welcomemsg Name
 
 func initBD() {
 	var err error
-	db, err = sql.Open("sqlite3", "./users.db")
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		// Fallback for local development
+		connStr = "host=localhost port=5432 user=postgres password=yourpassword dbname=notesdb sslmode=disable"
+	}
+
+	db, err = sql.Open("postgres", connStr)
 	if err != nil {
 		panic(err)
 	}
 
+	if err = db.Ping(); err != nil {
+		panic(err)
+	}
+
 	createTable := `CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT NOT NULL UNIQUE,
+		id SERIAL PRIMARY KEY,
+		username VARCHAR(15) UNIQUE NOT NULL,
 		password TEXT NOT NULL
 	);`
 
@@ -54,8 +64,8 @@ func initBD() {
 	}
 
 	createNotes := `CREATE TABLE IF NOT EXISTS notes (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		user_id INTEGER NOT NULL,
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		title TEXT NOT NULL,
 		content TEXT NOT NULL
 	);`
@@ -121,7 +131,7 @@ func Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err = db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", username, string(hashedPassword))
+		_, err = db.Exec("INSERT INTO users (username, password) VALUES ($1, $2)", username, string(hashedPassword))
 		if err != nil {
 			http.Error(w, "Username already taken or database error", http.StatusBadRequest)
 			return
@@ -150,7 +160,7 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 		var dbPassword string
 		var userID int
 
-		err := db.QueryRow("SELECT id, password FROM users WHERE username = ?", username).Scan(&userID, &dbPassword)
+		err := db.QueryRow("SELECT id, password FROM users WHERE username = $1", username).Scan(&userID, &dbPassword)
 		if err != nil {
 			fmt.Fprintln(w, "Invalid username or password")
 			return
@@ -161,8 +171,6 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintln(w, "Invalid username or password")
 			return
 		}
-
-		welcomemsg = Name{Username: username}
 
 		http.SetCookie(w, &http.Cookie{
 			Name:  "user_id",
@@ -181,12 +189,18 @@ func DashBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = ?", cookie.Value)
+	var username string
+	err = db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
+	if err != nil {
+		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
+		return
+	}
+
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1", cookie.Value)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
 	}
-
 	defer rows.Close()
 
 	var notes []Note
@@ -196,7 +210,7 @@ func DashBoard(w http.ResponseWriter, r *http.Request) {
 		notes = append(notes, n)
 	}
 
-	data := DashData{Username: welcomemsg.Username, Notes: notes}
+	data := DashData{Username: username, Notes: notes}
 	tmpl, _ := template.ParseFiles("templates/DashBoard.html")
 	tmpl.Execute(w, data)
 }
@@ -207,7 +221,6 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookie, err := r.Cookie("user_id")
-
 	if err != nil {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
@@ -224,13 +237,13 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if noteID != "" && noteID != "0" {
-		_, err = db.Exec("UPDATE notes SET title = ?, content = ? WHERE id = ?", title, content, noteID)
+		_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, noteID, cookie.Value)
 		if err != nil {
 			http.Error(w, "Error updating note: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	} else {
-		_, err = db.Exec("INSERT INTO notes (user_id, title, content) VALUES (?, ?, ?)", cookie.Value, title, content)
+		_, err = db.Exec("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3)", cookie.Value, title, content)
 		if err != nil {
 			http.Error(w, "Error saving note: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -247,32 +260,37 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
-	// r.URL.Path gives you the full path e.g. "/note/123"
-	// TrimPrefix strips "/note/" leaving just "123"
+
 	idStr := strings.TrimPrefix(r.URL.Path, "/note/")
 	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid note ID", http.StatusBadRequest)
+		return
+	}
 
-	err = db.QueryRow("SELECT id, title, content FROM notes WHERE user_id = ? AND id = ?", cookie.Value, id).Scan(&activeNote.ID, &activeNote.Title, &activeNote.Content)
+	err = db.QueryRow("SELECT id, title, content FROM notes WHERE user_id = $1 AND id = $2", cookie.Value, id).Scan(&activeNote.ID, &activeNote.Title, &activeNote.Content)
 	if err != nil {
 		http.Error(w, "Error fetching note", http.StatusInternalServerError)
 		return
 	}
 
 	var username string
-	db.QueryRow("SELECT username FROM users WHERE id = ?", cookie.Value).Scan(&username)
+	db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = ?", cookie.Value)
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1", cookie.Value)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
+
 	var notes []Note
 	for rows.Next() {
 		var n Note
 		rows.Scan(&n.ID, &n.Title, &n.Content)
 		notes = append(notes, n)
 	}
+
 	data := DashData{
 		Username:   username,
 		Notes:      notes,
@@ -284,13 +302,21 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmpl.Execute(w, data)
-
 }
 
 func DeleteNote(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("user_id")
+	if err != nil {
+		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
+		return
+	}
+
 	idStr := strings.TrimPrefix(r.URL.Path, "/deletenote/")
-	id, _ := strconv.Atoi(idStr)
-	db.Exec("DELETE FROM notes WHERE id = ?", id)
+	id, err := strconv.Atoi(idStr)
+	if err == nil {
+		db.Exec("DELETE FROM notes WHERE id = $1 AND user_id = $2", id, cookie.Value)
+	}
+
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
 
@@ -301,7 +327,6 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 		Path:   "/",
 		MaxAge: -1,
 	})
-	welcomemsg = Name{}
 	http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 }
 
@@ -325,6 +350,11 @@ func main() {
 	http.HandleFunc("/deletenote/", DeleteNote)
 	http.HandleFunc("/logout", Logout)
 	http.HandleFunc("/UnavailableFeatures", UnavailableFeatures)
-	fmt.Println("Server starting at http://localhost:8080")
-	http.ListenAndServe(":8080", nil)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Fallback for local testing
+	}
+
+	fmt.Printf("Server starting on port %s\n", port)
+	http.ListenAndServe(":"+port, nil)
 }
