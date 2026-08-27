@@ -1,10 +1,14 @@
-# .gitignore
+# Environment & secret files
 .env
+*.env
+
+# Compiled Go binaries
+main
+notes-webapp
 *.exe
-*.exe*
-*.dll
-*.so
-*.dylib
-*.test
 *.out
-bin/
+
+# Editor configuration
+.vscode/
+.idea/
+.DS_Store

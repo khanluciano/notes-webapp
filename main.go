@@ -36,14 +36,16 @@ type DashData struct {
 var db *sql.DB
 
 func initBD() {
-	var err error
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		// Fallback for local development
-		connStr = "host=localhost port=5432 user=postgres password=yourpassword dbname=notesdb sslmode=disable"
+		// Fallback default connection string for local testing
+		connStr = "host=localhost port=5432 user=notesuser password=yourpassword dbname=notesdb sslmode=disable"
 	}
 
+	var err error
 	db, err = sql.Open("postgres", connStr)
+	// ...
+
 	if err != nil {
 		panic(err)
 	}
@@ -131,13 +133,23 @@ func Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		_, err = db.Exec("INSERT INTO users (username, password) VALUES ($1, $2)", username, string(hashedPassword))
+		// Insert user and fetch the newly generated ID
+		var userID int
+		err = db.QueryRow("INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id", username, string(hashedPassword)).Scan(&userID)
 		if err != nil {
 			http.Error(w, "Username already taken or database error", http.StatusBadRequest)
 			return
 		}
 
-		http.Redirect(w, r, "/SignIn?username="+username, http.StatusSeeOther)
+		// Automatically log in by setting the cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:  "user_id",
+			Value: fmt.Sprintf("%d", userID),
+			Path:  "/",
+		})
+
+		// Redirect directly to the dashboard
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	}
 }
 
