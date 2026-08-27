@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Notes</title>
+    <style>
+        :root {
+            --bg-color: #121214;
+            --sidebar-bg: #16161a;
+            --card-bg: #1a1a1e;
+            --text-main: #e1e1e6;
+            --text-muted: #8d8d99;
+            --accent: #00b37e;
+            --accent-dim: #00b37e22;
+            --border: #29292e;
+            --danger: #ef4444;
+            --danger-dim: #ef444422;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* ── SIDEBAR ── */
+        .sidebar {
+            width: 260px;
+            min-width: 260px;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 1.25rem 1rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .sidebar-header .welcome {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .sidebar-header .username {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .sidebar-actions {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .btn-new-note {
+            width: 100%;
+            background-color: var(--accent);
+            color: #fff;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: opacity 0.15s;
+        }
+
+        .btn-new-note:hover {
+            opacity: 0.85;
+        }
+
+        .notes-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem 0;
+        }
+
+        .notes-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .notes-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .notes-list::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        /* Wrapper to layout note link and delete button inline */
+        .note-item-wrapper {
+            display: flex;
+            align-items: stretch;
+            border-bottom: 1px solid transparent;
+            transition: background-color 0.15s;
+        }
+
+        .note-item-wrapper:hover {
+            background-color: var(--card-bg);
+        }
+
+        .note-item {
+            flex: 1;
+            display: block;
+            padding: 0.75rem 1rem;
+            cursor: pointer;
+            border-left: 2px solid transparent;
+            text-decoration: none;
+            overflow: hidden;
+            transition: border-color 0.15s;
+        }
+
+        .note-item-wrapper:hover .note-item {
+            border-left-color: var(--accent);
+        }
+
+        .note-item-wrapper.active {
+            background-color: var(--accent-dim);
+        }
+
+        .note-item-wrapper.active .note-item {
+            border-left-color: var(--accent);
+        }
+
+        .note-item-title {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .note-item-preview {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            line-height: 1.5;
+        }
+
+        /* Delete Form & Button Action Styles */
+        .delete-form {
+            display: flex;
+            align-items: center;
+            padding-right: 0.75rem;
+        }
+
+        .btn-delete-note {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .note-item-wrapper:hover .btn-delete-note {
+            border-color: #29292e;
+        }
+
+        .btn-delete-note:hover {
+            background-color: var(--danger-dim) !important;
+            border-color: var(--danger) !important;
+            color: var(--danger) !important;
+        }
+
+        .empty-notes {
+            padding: 1.5rem 1rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        .sidebar-footer {
+            padding: 0.75rem 1rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .btn-logout {
+            width: 100%;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s;
+        }
+
+        .btn-logout:hover {
+            border-color: var(--danger);
+            color: var(--danger);
+        }
+
+        /* ── MAIN EDITOR ── */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .editor-topbar {
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+        }
+
+        .btn-save {
+            background-color: var(--accent);
+            color: #fff;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+
+        .btn-save:hover {
+            opacity: 0.85;
+        }
+
+        .editor-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 2.5rem 3rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .title-input {
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-main);
+            font-size: 2rem;
+            font-weight: 700;
+            padding-bottom: 0.75rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .title-input:focus {
+            border-color: var(--accent);
+        }
+
+        .note-textarea {
+            width: 100%;
+            flex: 1;
+            min-height: 500px;
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            font-size: 1rem;
+            line-height: 1.8;
+            resize: none;
+            outline: none;
+        }
+
+        ::placeholder {
+            color: var(--text-muted);
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <span class="welcome">Signed in as</span>
+            <span class="username">{{.Username}}</span>
+        </div>
+
+        <div class="sidebar-actions">
+            <button class="btn-new-note" onclick="clearEditor()">
+                + New note
+            </button>
+        </div>
+
+        <nav class="notes-list">
+            {{if .Notes}}
+                {{range .Notes}}
+                <div class="note-item-wrapper {{if eq .ID $.ActiveNote.ID}}active{{end}}">
+                    <a class="note-item" href="/note/{{.ID}}">
+                        <div class="note-item-title">{{.Title}}</div>
+                        <div class="note-item-preview">{{.Content}}</div>
+                    </a>
+                    <form action="/deletenote/{{.ID}}" method="POST" class="delete-form" onsubmit="return confirm('Are you sure you want to delete this note?')">
+                        <button type="submit" class="btn-delete-note">Delete</button>
+                    </form>
+                </div>
+                {{end}}
+            {{else}}
+                <div class="empty-notes">No notes yet.<br>Create your first one.</div>
+            {{end}}
+        </nav>
+
+        <div class="sidebar-footer">
+            <form action="/logout" method="POST">
+                <button type="submit" class="btn-logout">Log out</button>
+            </form>
+        </div>
+    </aside>
+
+    <!-- MAIN EDITOR -->
+    <main class="main">
+        <form action="/savenote" method="POST" style="display:contents">
+            <div class="editor-topbar">
+                <button type="submit" class="btn-save">Save note</button>
+            </div>
+            <div class="editor-body">
+                <input type="hidden" name="note_id" value="{{.ActiveNote.ID}}">
+                <input type="text" name="title" class="title-input" placeholder="Untitled note" value="{{.ActiveNote.Title}}">
+                <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
+            </div>
+        </form>
+    </main>
+
+    <script>
+        function clearEditor() {
+            document.querySelector('input[name="note_id"]').value = '';
+            document.querySelector('.title-input').value = '';
+            document.querySelector('.note-textarea').value = '';
+            document.querySelector('.title-input').focus();
+        }
+    </script>
+
+</body>
+</html>
