@@ -599,37 +599,37 @@
                 <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
 
                 <!-- ATTACHED FILES (only shown when viewing an existing note) -->
-                {{if .ActiveNote.Files}}
-                <div class="file-upload-section">
-                    <span class="file-upload-label">Attached Files</span>
-                    <div class="attached-files">
-                        {{range .ActiveNote.Files}}
-                        <div class="attached-file">
-                            <span class="file-icon">
-                                {{if contains .FileType "image"}}🖼️
-                                {{else if contains .FileType "video"}}🎬
-                                {{else if contains .FileType "audio"}}🎵
-                                {{else}}📎{{end}}
-                            </span>
-                            <div class="file-info">
-                                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
-                                <div class="file-type-label">{{.FileType}}</div>
-                            </div>
-                            <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" style="margin:0">
-                                <button type="submit" class="btn-delete-file">Remove</button>
-                            </form>
-                        </div>
-                        {{if contains .FileType "image"}}
-                        <img src="{{.FileURL}}" class="media-preview" alt="{{.FileName}}">
-                        {{else if contains .FileType "video"}}
-                        <video src="{{.FileURL}}" class="media-preview" controls></video>
-                        {{else if contains .FileType "audio"}}
-                        <audio src="{{.FileURL}}" controls style="width:100%; margin-top:0.25rem;"></audio>
-                        {{end}}
-                        {{end}}
-                    </div>
-                </div>
-                {{end}}
+                <!-- ATTACHED FILES DISPLAY -->
+{{if .ActiveNote.Files}}
+<div class="file-upload-section">
+    <span class="file-upload-label">Attached Files</span>
+    <div class="attached-files">
+        {{range .ActiveNote.Files}}
+        <div class="attached-file">
+            <span class="file-icon">
+                {{if contains .FileType "image"}}🖼️
+                {{else if contains .FileType "video"}}🎬
+                {{else if contains .FileType "audio"}}🎵
+                {{else}}📎{{end}}
+            </span>
+            <div class="file-info">
+                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
+                <div class="file-type-label">{{.FileType}}</div>
+            </div>
+            <!-- FIXED: Added form attribute referencing an external form ID -->
+            <button type="submit" form="delete-file-form-{{.ID}}" class="btn-delete-file">Remove</button>
+        </div>
+        {{if contains .FileType "image"}}
+        <img src="{{.FileURL}}" class="media-preview" alt="{{.FileName}}">
+        {{else if contains .FileType "video"}}
+        <video src="{{.FileURL}}" class="media-preview" controls></video>
+        {{else if contains .FileType "audio"}}
+        <audio src="{{.FileURL}}" controls style="width:100%; margin-top:0.25rem;"></audio>
+        {{end}}
+        {{end}}
+    </div>
+</div>
+{{end}}
 
                 <!-- FILE UPLOAD INPUT -->
                 <div class="file-upload-section">
@@ -646,6 +646,11 @@
 
             </div>
         </form>
+
+        <!-- STANDALONE FILE DELETE FORMS -->
+    {{range .ActiveNote.Files}}
+    <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" id="delete-file-form-{{.ID}}" style="display:none;"></form>
+    {{end}}
     </main>
 
     <script>
