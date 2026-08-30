@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"text/template"
+	"html/template"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -60,8 +62,40 @@ type GoogleUser struct {
 
 var db *sql.DB
 var googleOAuthConfig *oauth2.Config
+
+func isImage(f NoteFile) bool {
+	ft := strings.ToLower(f.FileType)
+	fn := strings.ToLower(f.FileName)
+	return strings.Contains(ft, "image") ||
+		strings.HasSuffix(fn, ".png") || strings.HasSuffix(fn, ".jpg") ||
+		strings.HasSuffix(fn, ".jpeg") || strings.HasSuffix(fn, ".gif") ||
+		strings.HasSuffix(fn, ".webp") || strings.HasSuffix(fn, ".svg") ||
+		strings.HasSuffix(fn, ".bmp") || strings.HasSuffix(fn, ".ico")
+}
+
+func isVideo(f NoteFile) bool {
+	ft := strings.ToLower(f.FileType)
+	fn := strings.ToLower(f.FileName)
+	return strings.Contains(ft, "video") ||
+		strings.HasSuffix(fn, ".mp4") || strings.HasSuffix(fn, ".webm") ||
+		strings.HasSuffix(fn, ".ogg") || strings.HasSuffix(fn, ".mov") ||
+		strings.HasSuffix(fn, ".mkv") || strings.HasSuffix(fn, ".avi")
+}
+
+func isAudio(f NoteFile) bool {
+	ft := strings.ToLower(f.FileType)
+	fn := strings.ToLower(f.FileName)
+	return strings.Contains(ft, "audio") ||
+		strings.HasSuffix(fn, ".mp3") || strings.HasSuffix(fn, ".wav") ||
+		strings.HasSuffix(fn, ".ogg") || strings.HasSuffix(fn, ".m4a") ||
+		strings.HasSuffix(fn, ".flac") || strings.HasSuffix(fn, ".aac")
+}
+
 var funcMap = template.FuncMap{
 	"contains": strings.Contains,
+	"isImage":  isImage,
+	"isVideo":  isVideo,
+	"isAudio":  isAudio,
 }
 
 func initDB() {
@@ -73,11 +107,13 @@ func initDB() {
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to open DB: %v", err)
 	}
 
 	if err = db.Ping(); err != nil {
-		panic(err)
+		log.Printf("⚠️ Warning: DB ping failed on startup (will retry on requests): %v", err)
+	} else {
+		log.Println("✅ Database connection established")
 	}
 
 	createTable := `CREATE TABLE IF NOT EXISTS users (
@@ -87,9 +123,8 @@ func initDB() {
 		google_id TEXT UNIQUE,
 		email TEXT
 	);`
-	_, err = db.Exec(createTable)
-	if err != nil {
-		panic(err)
+	if _, err = db.Exec(createTable); err != nil {
+		log.Printf("Error creating users table: %v", err)
 	}
 
 	createNotes := `CREATE TABLE IF NOT EXISTS notes (
@@ -98,9 +133,8 @@ func initDB() {
 		title TEXT NOT NULL,
 		content TEXT NOT NULL
 	);`
-	_, err = db.Exec(createNotes)
-	if err != nil {
-		panic(err)
+	if _, err = db.Exec(createNotes); err != nil {
+		log.Printf("Error creating notes table: %v", err)
 	}
 
 	createFiles := `CREATE TABLE IF NOT EXISTS note_files (
@@ -112,17 +146,27 @@ func initDB() {
 		file_type TEXT NOT NULL,
 		created_at TIMESTAMP DEFAULT NOW()
 	);`
-	_, err = db.Exec(createFiles)
-	if err != nil {
-		panic(err)
+	if _, err = db.Exec(createFiles); err != nil {
+		log.Printf("Error creating note_files table: %v", err)
 	}
 }
 
 func initGoogleOAuth() {
+	redirectURL := os.Getenv("GOOGLE_REDIRECT_URL")
+	if redirectURL == "" {
+		if appURL := os.Getenv("APP_URL"); appURL != "" {
+			redirectURL = strings.TrimRight(appURL, "/") + "/auth/google/callback"
+		} else if railwayDomain := os.Getenv("RAILWAY_PUBLIC_DOMAIN"); railwayDomain != "" {
+			redirectURL = "https://" + railwayDomain + "/auth/google/callback"
+		} else {
+			redirectURL = "https://notes-webapp-production-b92a.up.railway.app/auth/google/callback"
+		}
+	}
+
 	googleOAuthConfig = &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  "https://notes-webapp-production-b92a.up.railway.app/auth/google/callback",
+		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/userinfo.email",
 			"https://www.googleapis.com/auth/userinfo.profile",
@@ -143,30 +187,138 @@ func setUserCookie(w http.ResponseWriter, userID int) {
 	})
 }
 
+func getSupabaseURL() string {
+	raw := strings.TrimSpace(os.Getenv("SUPABASE_URL"))
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimRight(raw, "/")
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = "https://" + raw
+	}
+	return raw
+}
+
+func getSupabaseKey() string {
+	key := os.Getenv("SUPABASE_KEY")
+	if key == "" {
+		key = os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	}
+	if key == "" {
+		key = os.Getenv("SUPABASE_ANON_KEY")
+	}
+	return strings.TrimSpace(key)
+}
+
+func getSupabaseBucket() string {
+	bucket := strings.TrimSpace(os.Getenv("SUPABASE_BUCKET"))
+	if bucket == "" {
+		bucket = "note-files"
+	}
+	return bucket
+}
+
+func sanitizeFileName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	cleaned := b.String()
+	if cleaned == "" || cleaned == "." {
+		cleaned = "file"
+	}
+	return cleaned
+}
+
+// ensureSupabaseBucket checks if the bucket exists in Supabase and creates it as public if missing
+func ensureSupabaseBucket() {
+	supabaseURL := getSupabaseURL()
+	supabaseKey := getSupabaseKey()
+	bucket := getSupabaseBucket()
+
+	if supabaseURL == "" || supabaseKey == "" {
+		log.Println("⚠️  Supabase URL or Key not set. Skipping bucket check.")
+		return
+	}
+
+	checkURL := fmt.Sprintf("%s/storage/v1/bucket/%s", supabaseURL, bucket)
+	req, err := http.NewRequest("GET", checkURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("apikey", supabaseKey)
+	req.Header.Set("Authorization", "Bearer "+supabaseKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("✅ Supabase bucket '%s' is verified and accessible\n", bucket)
+			return
+		}
+	}
+
+	// Try creating the public bucket if not found
+	createURL := fmt.Sprintf("%s/storage/v1/bucket", supabaseURL)
+	payload := map[string]interface{}{
+		"id":     bucket,
+		"name":   bucket,
+		"public": true,
+	}
+	bodyJSON, _ := json.Marshal(payload)
+	createReq, err := http.NewRequest("POST", createURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return
+	}
+	createReq.Header.Set("apikey", supabaseKey)
+	createReq.Header.Set("Authorization", "Bearer "+supabaseKey)
+	createReq.Header.Set("Content-Type", "application/json")
+
+	createResp, err := client.Do(createReq)
+	if err == nil {
+		defer createResp.Body.Close()
+		respBytes, _ := io.ReadAll(createResp.Body)
+		if createResp.StatusCode == http.StatusOK || createResp.StatusCode == http.StatusCreated {
+			log.Printf("✅ Automatically created public Supabase bucket '%s'\n", bucket)
+		} else {
+			log.Printf("ℹ️  Supabase bucket check/create response (%d): %s\n", createResp.StatusCode, string(respBytes))
+		}
+	}
+}
+
 // uploadToSupabase uploads a file to Supabase Storage and returns the public URL
 func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (string, error) {
-	supabaseURL := os.Getenv("SUPABASE_URL")
-	supabaseKey := os.Getenv("SUPABASE_KEY")
-	bucket := "note-files"
+	supabaseURL := getSupabaseURL()
+	supabaseKey := getSupabaseKey()
+	bucket := getSupabaseBucket()
 
 	if supabaseURL == "" || supabaseKey == "" {
 		return "", fmt.Errorf("SUPABASE_URL or SUPABASE_KEY environment variable is not set")
 	}
 
-	// Build the upload URL
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(fileBytes)
+	}
+
 	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucket, fileName)
-	fmt.Printf("[Supabase] Uploading to: %s\n", uploadURL)
+	log.Printf("[Supabase] Uploading to: %s (ContentType: %s, Size: %d bytes)\n", uploadURL, contentType, len(fileBytes))
 
 	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(fileBytes))
 	if err != nil {
 		return "", err
 	}
 
+	req.Header.Set("apikey", supabaseKey)
 	req.Header.Set("Authorization", "Bearer "+supabaseKey)
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("x-upsert", "true") // overwrite if same name exists
+	req.Header.Set("x-upsert", "true")
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("supabase HTTP request failed: %w", err)
@@ -175,18 +327,53 @@ func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (st
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("supabase upload failed status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("supabase upload failed with status %d: %s", resp.StatusCode, string(body))
 	}
-	// Build the public URL
+
 	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, bucket, fileName)
-	fmt.Printf("[Supabase] Public URL: %s\n", publicURL)
+	log.Printf("[Supabase] Upload success! Public URL: %s\n", publicURL)
 	return publicURL, nil
+}
+
+// deleteFromSupabase removes an object from Supabase Storage
+func deleteFromSupabase(fileURL string) {
+	supabaseURL := getSupabaseURL()
+	supabaseKey := getSupabaseKey()
+	bucket := getSupabaseBucket()
+
+	if supabaseURL == "" || supabaseKey == "" || fileURL == "" {
+		return
+	}
+
+	prefix := fmt.Sprintf("/storage/v1/object/public/%s/", bucket)
+	idx := strings.Index(fileURL, prefix)
+	var fileName string
+	if idx != -1 {
+		fileName = fileURL[idx+len(prefix):]
+	} else {
+		fileName = filepath.Base(fileURL)
+	}
+
+	deleteURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucket, fileName)
+	req, err := http.NewRequest("DELETE", deleteURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("apikey", supabaseKey)
+	req.Header.Set("Authorization", "Bearer "+supabaseKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
 }
 
 // fetchNoteFiles fetches all files attached to a note
 func fetchNoteFiles(noteID int) []NoteFile {
-	rows, err := db.Query("SELECT id, file_url, file_name, file_type FROM note_files WHERE note_id = $1", noteID)
+	rows, err := db.Query("SELECT id, file_url, file_name, file_type FROM note_files WHERE note_id = $1 ORDER BY id ASC", noteID)
 	if err != nil {
+		log.Printf("Error fetching files for note %d: %v", noteID, err)
 		return nil
 	}
 	defer rows.Close()
@@ -194,8 +381,9 @@ func fetchNoteFiles(noteID int) []NoteFile {
 	var files []NoteFile
 	for rows.Next() {
 		var f NoteFile
-		rows.Scan(&f.ID, &f.FileURL, &f.FileName, &f.FileType)
-		files = append(files, f)
+		if err := rows.Scan(&f.ID, &f.FileURL, &f.FileName, &f.FileType); err == nil {
+			files = append(files, f)
+		}
 	}
 	return files
 }
@@ -204,6 +392,15 @@ func Home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Redirect to dashboard if already authenticated
+	if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
+		var exists int
+		if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
+			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+			return
+		}
 	}
 
 	tmpl, err := template.ParseFiles("templates/manageAccount.html")
@@ -222,6 +419,13 @@ func Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
+		if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
+			var exists int
+			if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
+				http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+				return
+			}
+		}
 		tmpl.Execute(w, AuthData{ActiveTab: "right-panel-active"})
 		return
 	}
@@ -229,7 +433,7 @@ func Register(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
 
-		username := r.FormValue("username")
+		username := strings.TrimSpace(r.FormValue("username"))
 		password := r.FormValue("password")
 		confirmPassword := r.FormValue("password_confirm")
 
@@ -285,6 +489,13 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
+		if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
+			var exists int
+			if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
+				http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+				return
+			}
+		}
 		username := r.URL.Query().Get("username")
 		tmpl.Execute(w, AuthData{Username: username})
 		return
@@ -293,7 +504,7 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
 
-		username := r.FormValue("username")
+		username := strings.TrimSpace(r.FormValue("username"))
 		password := r.FormValue("password")
 
 		var dbPassword sql.NullString
@@ -338,6 +549,7 @@ func GoogleCallback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := googleOAuthConfig.Exchange(r.Context(), code)
 	if err != nil {
+		log.Printf("Google OAuth exchange error: %v", err)
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
@@ -390,7 +602,7 @@ func SetUsername(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
 
-		username := r.FormValue("username")
+		username := strings.TrimSpace(r.FormValue("username"))
 		googleID := r.FormValue("google_id")
 		email := r.FormValue("email")
 
@@ -433,7 +645,7 @@ func DashBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1", cookie.Value)
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", cookie.Value)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
@@ -443,14 +655,15 @@ func DashBoard(w http.ResponseWriter, r *http.Request) {
 	var notes []Note
 	for rows.Next() {
 		var n Note
-		rows.Scan(&n.ID, &n.Title, &n.Content)
-		notes = append(notes, n)
+		if err := rows.Scan(&n.ID, &n.Title, &n.Content); err == nil {
+			notes = append(notes, n)
+		}
 	}
 
 	data := DashData{Username: username, Notes: notes}
 	tmpl, err := template.New("DashBoard.html").Funcs(funcMap).ParseFiles("templates/DashBoard.html")
 	if err != nil {
-		http.Error(w, "Error parsing template", http.StatusInternalServerError)
+		http.Error(w, "Error parsing template: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	tmpl.Execute(w, data)
@@ -467,16 +680,14 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form — 20MB max
-	r.ParseMultipartForm(30 << 20)
-	fmt.Printf("MultipartForm: %v\n", r.MultipartForm)
-	fmt.Printf("Form files: %v\n", r.MultipartForm)
-	if r.MultipartForm != nil {
-		fmt.Printf("Files in form: %v\n", r.MultipartForm.File)
+	// Parse multipart form — 32MB max
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		r.ParseForm()
 	}
-	title := r.FormValue("title")
+
+	title := strings.TrimSpace(r.FormValue("title"))
 	content := r.FormValue("note")
-	noteID := r.FormValue("note_id")
+	noteID := strings.TrimSpace(r.FormValue("note_id"))
 
 	if title == "" {
 		title = "Untitled note"
@@ -485,13 +696,18 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	var savedNoteID int
 
 	if noteID != "" && noteID != "0" {
-		_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, noteID, cookie.Value)
-		if err != nil {
-			http.Error(w, "Error updating note: "+err.Error(), http.StatusInternalServerError)
-			return
+		id, err := strconv.Atoi(noteID)
+		if err == nil {
+			_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, id, cookie.Value)
+			if err != nil {
+				http.Error(w, "Error updating note: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			savedNoteID = id
 		}
-		savedNoteID, _ = strconv.Atoi(noteID)
-	} else {
+	}
+
+	if savedNoteID == 0 {
 		err = db.QueryRow("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3) RETURNING id", cookie.Value, title, content).Scan(&savedNoteID)
 		if err != nil {
 			http.Error(w, "Error saving note: "+err.Error(), http.StatusInternalServerError)
@@ -503,38 +719,51 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	if r.MultipartForm != nil && r.MultipartForm.File != nil {
 		files := r.MultipartForm.File["files"]
 		for _, fileHeader := range files {
-			// Check file size — 10MB per file
-			if fileHeader.Size > 10<<20 {
+			if fileHeader == nil || fileHeader.Filename == "" || fileHeader.Size == 0 {
+				continue
+			}
+
+			// Check file size — max 30MB per file
+			if fileHeader.Size > 30<<20 {
+				log.Printf("File '%s' exceeds max size of 30MB, skipping", fileHeader.Filename)
 				continue
 			}
 
 			file, err := fileHeader.Open()
 			if err != nil {
+				log.Printf("Error opening uploaded file '%s': %v", fileHeader.Filename, err)
 				continue
 			}
-			defer file.Close()
 
 			fileBytes, err := io.ReadAll(file)
+			file.Close()
 			if err != nil {
+				log.Printf("Error reading uploaded file '%s': %v", fileHeader.Filename, err)
 				continue
 			}
 
 			contentType := fileHeader.Header.Get("Content-Type")
-			fileName := fmt.Sprintf("%d-%d-%s", savedNoteID, time.Now().UnixNano(), fileHeader.Filename)
+			if contentType == "" || contentType == "application/octet-stream" {
+				contentType = http.DetectContentType(fileBytes)
+			}
+
+			cleanName := sanitizeFileName(filepath.Base(fileHeader.Filename))
+			fileName := fmt.Sprintf("%d_%d_%s", savedNoteID, time.Now().UnixNano(), cleanName)
+
 			publicURL, err := uploadToSupabase(fileBytes, fileName, contentType)
 			if err != nil {
-				fmt.Printf("Upload error: %v\n", err)
+				log.Printf("Upload error for '%s': %v", fileHeader.Filename, err)
 				continue
 			}
 
-			fmt.Printf("Uploaded to: %s\n", publicURL)
+			log.Printf("Uploaded '%s' -> %s", fileHeader.Filename, publicURL)
 
 			_, dbErr := db.Exec(
 				"INSERT INTO note_files (note_id, user_id, file_url, file_name, file_type) VALUES ($1, $2, $3, $4, $5)",
 				savedNoteID, cookie.Value, publicURL, fileHeader.Filename, contentType,
 			)
 			if dbErr != nil {
-				fmt.Printf("DB insert error: %v\n", dbErr)
+				log.Printf("DB insert error for file '%s': %v", fileHeader.Filename, dbErr)
 			}
 		}
 	}
@@ -553,25 +782,23 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/note/")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Invalid note ID", http.StatusBadRequest)
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
 	}
 
 	err = db.QueryRow("SELECT id, title, content FROM notes WHERE user_id = $1 AND id = $2", cookie.Value, id).Scan(&activeNote.ID, &activeNote.Title, &activeNote.Content)
 	if err != nil {
-		http.Error(w, "Error fetching note", http.StatusInternalServerError)
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
 	}
 
 	// Fetch files for this note
 	activeNote.Files = fetchNoteFiles(activeNote.ID)
 
-	fmt.Printf("Files for note %d: %+v\n", activeNote.ID, activeNote.Files)
-
 	var username string
 	db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1", cookie.Value)
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", cookie.Value)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
@@ -581,8 +808,9 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 	var notes []Note
 	for rows.Next() {
 		var n Note
-		rows.Scan(&n.ID, &n.Title, &n.Content)
-		notes = append(notes, n)
+		if err := rows.Scan(&n.ID, &n.Title, &n.Content); err == nil {
+			notes = append(notes, n)
+		}
 	}
 
 	data := DashData{
@@ -592,7 +820,7 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpl, err := template.New("DashBoard.html").Funcs(funcMap).ParseFiles("templates/DashBoard.html")
 	if err != nil {
-		http.Error(w, "Error parsing template", http.StatusInternalServerError)
+		http.Error(w, "Error parsing template: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	tmpl.Execute(w, data)
@@ -608,6 +836,17 @@ func DeleteNote(w http.ResponseWriter, r *http.Request) {
 	idStr := strings.TrimPrefix(r.URL.Path, "/deletenote/")
 	id, err := strconv.Atoi(idStr)
 	if err == nil {
+		// Clean up files in Supabase storage
+		rows, fErr := db.Query("SELECT file_url FROM note_files WHERE note_id = $1 AND user_id = $2", id, cookie.Value)
+		if fErr == nil {
+			for rows.Next() {
+				var fURL string
+				if scanErr := rows.Scan(&fURL); scanErr == nil && fURL != "" {
+					deleteFromSupabase(fURL)
+				}
+			}
+			rows.Close()
+		}
 		db.Exec("DELETE FROM notes WHERE id = $1 AND user_id = $2", id, cookie.Value)
 	}
 
@@ -632,6 +871,11 @@ func DeleteFile(w http.ResponseWriter, r *http.Request) {
 	noteID := parts[1]
 
 	if err == nil {
+		var fileURL string
+		db.QueryRow("SELECT file_url FROM note_files WHERE id = $1 AND user_id = $2", fileID, cookie.Value).Scan(&fileURL)
+		if fileURL != "" {
+			deleteFromSupabase(fileURL)
+		}
 		db.Exec("DELETE FROM note_files WHERE id = $1 AND user_id = $2", fileID, cookie.Value)
 	}
 
@@ -661,18 +905,30 @@ func UnavailableFeatures(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 	initGoogleOAuth()
+	ensureSupabaseBucket()
 
-	// Log Supabase config status for debugging
-	if os.Getenv("SUPABASE_URL") == "" {
-		fmt.Println("⚠️  WARNING: SUPABASE_URL is not set — file uploads will fail!")
+	// Diagnostic status logs for environment configuration
+	log.Println("--- Environment Configuration Status ---")
+	if os.Getenv("DATABASE_URL") == "" {
+		log.Println("ℹ️  DATABASE_URL not set, using default local postgres fallback")
 	} else {
-		fmt.Printf("✅ SUPABASE_URL is set: %s\n", os.Getenv("SUPABASE_URL"))
+		log.Println("✅ DATABASE_URL is configured")
 	}
-	if os.Getenv("SUPABASE_KEY") == "" {
-		fmt.Println("⚠️  WARNING: SUPABASE_KEY is not set — file uploads will fail!")
+
+	if getSupabaseURL() == "" {
+		log.Println("⚠️  SUPABASE_URL is NOT set — file uploads to storage will fail!")
 	} else {
-		fmt.Println("✅ SUPABASE_KEY is set")
+		log.Printf("✅ SUPABASE_URL configured: %s\n", getSupabaseURL())
 	}
+
+	if getSupabaseKey() == "" {
+		log.Println("⚠️  SUPABASE_KEY is NOT set — file uploads to storage will fail!")
+	} else {
+		log.Println("✅ SUPABASE_KEY is configured")
+	}
+
+	log.Printf("✅ SUPABASE_BUCKET is set to: %s\n", getSupabaseBucket())
+	log.Println("----------------------------------------")
 
 	http.HandleFunc("/", Home)
 	http.HandleFunc("/register", Register)
@@ -693,6 +949,8 @@ func main() {
 		port = "8080"
 	}
 
-	fmt.Printf("Server starting on port %s\n", port)
-	http.ListenAndServe(":"+port, nil)
+	log.Printf("Server starting on port %s...\n", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("Server stopped with error: %v", err)
+	}
 }

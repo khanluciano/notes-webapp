@@ -512,7 +512,7 @@
             </div>
             
             <div class="editor-body">
-                <input type="hidden" name="note_id" value="{{.ActiveNote.ID}}">
+                <input type="hidden" name="note_id" value="{{if .ActiveNote.ID}}{{.ActiveNote.ID}}{{end}}">
                 <input type="text" name="title" class="title-input" placeholder="Untitled note" value="{{.ActiveNote.Title}}">
                 <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
 
@@ -527,47 +527,44 @@
                     </div>
                     <div class="selected-files" id="selected-files"></div>
                 </div>
+
+                <!-- Attached Files Section inside scrollable editor-body -->
+                {{if .ActiveNote.Files}}
+                <div class="file-upload-section" style="margin-top: 1rem;">
+                    <span class="file-upload-label">Attached Files ({{len .ActiveNote.Files}})</span>
+                    <div class="attached-files">
+                        {{range .ActiveNote.Files}}
+                        <div class="attached-file" style="flex-direction: column; align-items: stretch;">
+                            {{if isImage .}}
+                            <img src="{{.FileURL}}" alt="{{.FileName}}" class="media-preview" loading="lazy">
+                            {{else if isVideo .}}
+                            <video controls class="media-preview" preload="metadata">
+                                <source src="{{.FileURL}}" type="{{.FileType}}">
+                                Your browser does not support video playback.
+                            </video>
+                            {{else if isAudio .}}
+                            <audio controls style="width: 100%; margin-top: 0.25rem;" preload="metadata">
+                                <source src="{{.FileURL}}" type="{{.FileType}}">
+                                Your browser does not support audio playback.
+                            </audio>
+                            {{end}}
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-top: 0.5rem;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem; overflow: hidden;">
+                                    <span class="file-icon">📎</span>
+                                    <div class="file-info">
+                                        <a href="{{.FileURL}}" target="_blank" rel="noopener noreferrer">{{.FileName}}</a>
+                                        <div class="file-type-label">{{.FileType}}</div>
+                                    </div>
+                                </div>
+                                <button type="button" class="btn-delete-file" onclick="deleteAttachedFile('{{.ID}}', '{{$.ActiveNote.ID}}')">Remove</button>
+                            </div>
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
             </div>
         </form>
-
-        <!-- Attached Files Section (Outside main note form to prevent any nested-form issues) -->
-        {{if .ActiveNote.Files}}
-        <div style="padding: 0 2rem 2rem 2rem;">
-            <div class="file-upload-section">
-                <span class="file-upload-label">Attached Files</span>
-                <div class="attached-files">
-                    {{range .ActiveNote.Files}}
-                    <div class="attached-file" style="flex-direction: column; align-items: stretch;">
-                        {{if contains .FileType "image"}}
-                        <img src="{{.FileURL}}" alt="{{.FileName}}" class="media-preview">
-                        {{else if contains .FileType "video"}}
-                        <video controls class="media-preview">
-                            <source src="{{.FileURL}}" type="{{.FileType}}">
-                            Your browser does not support video playback.
-                        </video>
-                        {{else if contains .FileType "audio"}}
-                        <audio controls style="width: 100%; margin-top: 0.25rem;">
-                            <source src="{{.FileURL}}" type="{{.FileType}}">
-                            Your browser does not support audio playback.
-                        </audio>
-                        {{end}}
-                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem;">
-                            <span class="file-icon">📎</span>
-                            <div class="file-info">
-                                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
-                                <div class="file-type-label">{{.FileType}}</div>
-                            </div>
-                            <!-- Independent standalone form for deleting an individual file -->
-                            <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" style="margin:0;">
-                                <button type="submit" class="btn-delete-file">Remove</button>
-                            </form>
-                        </div>
-                    </div>
-                    {{end}}
-                </div>
-            </div>
-        </div>
-        {{end}}
     </main>
 
     <script>
@@ -589,18 +586,36 @@
             }
         }
 
+        function deleteAttachedFile(fileId, noteId) {
+            if (confirm('Are you sure you want to remove this file?')) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/deletefile/' + fileId + '/' + noteId;
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');
             document.querySelector('.sidebar-overlay').classList.toggle('open');
         }
 
         function clearEditor() {
-            document.querySelector('input[name="note_id"]').value = '';
-            document.querySelector('.title-input').value = '';
-            document.querySelector('.note-textarea').value = '';
-            document.getElementById('selected-files').innerHTML = '';
+            if (window.location.pathname !== '/dashboard') {
+                window.location.href = '/dashboard';
+                return;
+            }
+            const noteIdInput = document.querySelector('input[name="note_id"]');
+            if (noteIdInput) noteIdInput.value = '';
+            const titleInput = document.querySelector('.title-input');
+            if (titleInput) titleInput.value = '';
+            const noteTextarea = document.querySelector('.note-textarea');
+            if (noteTextarea) noteTextarea.value = '';
+            const selectedFiles = document.getElementById('selected-files');
+            if (selectedFiles) selectedFiles.innerHTML = '';
             if (window.innerWidth <= 768) toggleSidebar();
-            document.querySelector('.title-input').focus();
+            if (titleInput) titleInput.focus();
         }
 
         function showSelectedFiles(input) {
