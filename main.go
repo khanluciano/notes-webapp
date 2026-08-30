@@ -2,23 +2,27 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
-type Name struct {
-	Username string
-}
-
-type LoginData struct {
-	Username string
+type AuthData struct {
+	Username      string
+	RegisterError string
+	SignInError   string
+	ActiveTab     string
 }
 
 type Note struct {
@@ -33,19 +37,29 @@ type DashData struct {
 	ActiveNote Note
 }
 
-var db *sql.DB
+type SetUsernameData struct {
+	GoogleID string
+	Email    string
+	Error    string
+}
 
-func initBD() {
+type GoogleUser struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+var db *sql.DB
+var googleOAuthConfig *oauth2.Config
+
+func initDB() {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		// Fallback default connection string for local testing
 		connStr = "host=localhost port=5432 user=notesuser password=yourpassword dbname=notesdb sslmode=disable"
 	}
 
 	var err error
 	db, err = sql.Open("postgres", connStr)
-	// ...
-
 	if err != nil {
 		panic(err)
 	}
@@ -56,8 +70,10 @@ func initBD() {
 
 	createTable := `CREATE TABLE IF NOT EXISTS users (
 		id SERIAL PRIMARY KEY,
-		username VARCHAR(15) UNIQUE NOT NULL,
-		password TEXT NOT NULL
+		username VARCHAR(25) UNIQUE,
+		password TEXT,
+		google_id TEXT UNIQUE,
+		email TEXT
 	);`
 
 	_, err = db.Exec(createTable)
@@ -78,6 +94,31 @@ func initBD() {
 	}
 }
 
+func initGoogleOAuth() {
+	googleOAuthConfig = &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  "https://notes-webapp-production-b92a.up.railway.app/auth/google/callback",
+		Scopes: []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+		},
+		Endpoint: google.Endpoint,
+	}
+}
+
+func setUserCookie(w http.ResponseWriter, userID int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "user_id",
+		Value:    fmt.Sprintf("%d", userID),
+		Path:     "/",
+		MaxAge:   30 * 24 * 60 * 60,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(30 * 24 * time.Hour),
+	})
+}
+
 func Home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -88,17 +129,18 @@ func Home(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error Parsing File", http.StatusInternalServerError)
 		return
 	}
-	tmpl.Execute(w, nil)
+	tmpl.Execute(w, AuthData{})
 }
 
 func Register(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.ParseFiles("templates/manageAccount.html")
+	if err != nil {
+		http.Error(w, "Error Parsing File", http.StatusInternalServerError)
+		return
+	}
+
 	if r.Method == "GET" {
-		tmpl, err := template.ParseFiles("templates/createAccount.html")
-		if err != nil {
-			http.Error(w, "Error Parsing File", http.StatusBadRequest)
-			return
-		}
-		tmpl.Execute(w, nil)
+		tmpl.Execute(w, AuthData{ActiveTab: "right-panel-active"})
 		return
 	}
 
@@ -109,87 +151,196 @@ func Register(w http.ResponseWriter, r *http.Request) {
 		password := r.FormValue("password")
 		confirmPassword := r.FormValue("password_confirm")
 
-		if password != confirmPassword {
-			http.Error(w, "Passwords do not match", http.StatusBadRequest)
-			return
+		renderError := func(msg string) {
+			w.WriteHeader(http.StatusBadRequest)
+			tmpl.Execute(w, AuthData{
+				Username:      username,
+				RegisterError: msg,
+				ActiveTab:     "right-panel-active",
+			})
 		}
 
-		if len(username) < 4 || len(username) > 15 {
-			http.Error(w, "Username must be between 4 and 15 characters", http.StatusBadRequest)
+		if password != confirmPassword {
+			renderError("Passwords do not match")
+			return
+		}
+		if len(username) < 4 || len(username) > 25 {
+			renderError("Username must be between 4 and 25 characters")
 			return
 		}
 		if len(password) < 6 {
-			http.Error(w, "Password must be at least 6 characters", http.StatusBadRequest)
+			renderError("Password must be a minimum of 6 characters")
 			return
 		}
 		if password == username {
-			http.Error(w, "Password cannot be the same as username", http.StatusBadRequest)
+			renderError("Password cannot be the same as username")
 			return
 		}
 
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			renderError("Internal server error")
 			return
 		}
 
-		// Insert user and fetch the newly generated ID
 		var userID int
 		err = db.QueryRow("INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id", username, string(hashedPassword)).Scan(&userID)
 		if err != nil {
-			http.Error(w, "Username already taken or database error", http.StatusBadRequest)
+			renderError("Username already taken")
 			return
 		}
 
-		// Automatically log in by setting the cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:  "user_id",
-			Value: fmt.Sprintf("%d", userID),
-			Path:  "/",
-		})
-
-		// Redirect directly to the dashboard
+		setUserCookie(w, userID)
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	}
 }
 
 func SignIn(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.ParseFiles("templates/manageAccount.html")
+	if err != nil {
+		http.Error(w, "Error parsing file", http.StatusInternalServerError)
+		return
+	}
+
 	if r.Method == "GET" {
 		username := r.URL.Query().Get("username")
-		tmpl, err := template.ParseFiles("templates/manageAccount.html")
-		if err != nil {
-			http.Error(w, "Error parsing file: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		tmpl.Execute(w, LoginData{Username: username})
+		tmpl.Execute(w, AuthData{Username: username})
+		return
 	}
+
 	if r.Method == "POST" {
 		r.ParseForm()
 
 		username := r.FormValue("username")
 		password := r.FormValue("password")
 
-		var dbPassword string
+		var dbPassword sql.NullString
 		var userID int
 
 		err := db.QueryRow("SELECT id, password FROM users WHERE username = $1", username).Scan(&userID, &dbPassword)
 		if err != nil {
-			fmt.Fprintln(w, "Invalid username or password")
+			w.WriteHeader(http.StatusUnauthorized)
+			tmpl.Execute(w, AuthData{Username: username, SignInError: "Invalid username or password"})
 			return
 		}
 
-		err = bcrypt.CompareHashAndPassword([]byte(dbPassword), []byte(password))
+		if !dbPassword.Valid || dbPassword.String == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			tmpl.Execute(w, AuthData{Username: username, SignInError: "This account uses Google Sign In"})
+			return
+		}
+
+		err = bcrypt.CompareHashAndPassword([]byte(dbPassword.String), []byte(password))
 		if err != nil {
-			fmt.Fprintln(w, "Invalid username or password")
+			w.WriteHeader(http.StatusUnauthorized)
+			tmpl.Execute(w, AuthData{Username: username, SignInError: "Invalid username or password"})
 			return
 		}
 
-		http.SetCookie(w, &http.Cookie{
-			Name:  "user_id",
-			Value: fmt.Sprintf("%d", userID),
-			Path:  "/",
-		})
+		setUserCookie(w, userID)
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	}
+}
 
+// GoogleLogin redirects user to Google's consent screen
+func GoogleLogin(w http.ResponseWriter, r *http.Request) {
+	url := googleOAuthConfig.AuthCodeURL("state-token", oauth2.AccessTypeOnline)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+// GoogleCallback handles the response from Google after user consents
+func GoogleCallback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "No code returned from Google", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for token
+	token, err := googleOAuthConfig.Exchange(r.Context(), code)
+	if err != nil {
+		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch user info from Google
+	client := googleOAuthConfig.Client(r.Context(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		http.Error(w, "Failed to get user info", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Failed to read user info", http.StatusInternalServerError)
+		return
+	}
+
+	var googleUser GoogleUser
+	if err := json.Unmarshal(body, &googleUser); err != nil {
+		http.Error(w, "Failed to parse user info", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if this Google account already exists in our database
+	var userID int
+	err = db.QueryRow("SELECT id FROM users WHERE google_id = $1", googleUser.ID).Scan(&userID)
+	if err == nil {
+		// User exists — log them in directly
+		setUserCookie(w, userID)
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
+	}
+
+	// New Google user — send them to pick a username
+	http.Redirect(w, r, "/auth/set-username?google_id="+googleUser.ID+"&email="+googleUser.Email, http.StatusSeeOther)
+}
+
+// SetUsername serves the username picker page for new Google users
+func SetUsername(w http.ResponseWriter, r *http.Request) {
+	tmpl, err := template.ParseFiles("templates/setUsername.html")
+	if err != nil {
+		http.Error(w, "Error parsing file", http.StatusInternalServerError)
+		return
+	}
+
+	if r.Method == "GET" {
+		googleID := r.URL.Query().Get("google_id")
+		email := r.URL.Query().Get("email")
+		tmpl.Execute(w, SetUsernameData{GoogleID: googleID, Email: email})
+		return
+	}
+
+	if r.Method == "POST" {
+		r.ParseForm()
+
+		username := r.FormValue("username")
+		googleID := r.FormValue("google_id")
+		email := r.FormValue("email")
+
+		renderError := func(msg string) {
+			w.WriteHeader(http.StatusBadRequest)
+			tmpl.Execute(w, SetUsernameData{GoogleID: googleID, Email: email, Error: msg})
+		}
+
+		if len(username) < 4 || len(username) > 25 {
+			renderError("Username must be between 4 and 25 characters")
+			return
+		}
+
+		var userID int
+		err = db.QueryRow(
+			"INSERT INTO users (username, google_id, email) VALUES ($1, $2, $3) RETURNING id",
+			username, googleID, email,
+		).Scan(&userID)
+		if err != nil {
+			renderError("Username already taken, please choose another")
+			return
+		}
+
+		setUserCookie(w, userID)
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 	}
 }
@@ -334,10 +485,11 @@ func DeleteNote(w http.ResponseWriter, r *http.Request) {
 
 func Logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:   "user_id",
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     "user_id",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
 	})
 	http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 }
@@ -352,7 +504,9 @@ func UnavailableFeatures(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	initBD()
+	initDB()
+	initGoogleOAuth()
+
 	http.HandleFunc("/", Home)
 	http.HandleFunc("/register", Register)
 	http.HandleFunc("/SignIn", SignIn)
@@ -362,9 +516,15 @@ func main() {
 	http.HandleFunc("/deletenote/", DeleteNote)
 	http.HandleFunc("/logout", Logout)
 	http.HandleFunc("/UnavailableFeatures", UnavailableFeatures)
+
+	// Google OAuth routes
+	http.HandleFunc("/auth/google/login", GoogleLogin)
+	http.HandleFunc("/auth/google/callback", GoogleCallback)
+	http.HandleFunc("/auth/set-username", SetUsername)
+
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // Fallback for local testing
+		port = "8080"
 	}
 
 	fmt.Printf("Server starting on port %s\n", port)
