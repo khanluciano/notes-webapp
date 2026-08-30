@@ -462,8 +462,12 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse multipart form — 20MB max
-	r.ParseMultipartForm(20 << 20)
-
+	r.ParseMultipartForm(30 << 20)
+	fmt.Printf("MultipartForm: %v\n", r.MultipartForm)
+	fmt.Printf("Form files: %v\n", r.MultipartForm)
+	if r.MultipartForm != nil {
+		fmt.Printf("Files in form: %v\n", r.MultipartForm.File)
+	}
 	title := r.FormValue("title")
 	content := r.FormValue("note")
 	noteID := r.FormValue("note_id")
