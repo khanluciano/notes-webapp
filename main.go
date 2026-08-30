@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -29,6 +30,14 @@ type Note struct {
 	ID      int
 	Title   string
 	Content string
+	Files   []NoteFile
+}
+
+type NoteFile struct {
+	ID       int
+	FileURL  string
+	FileName string
+	FileType string
 }
 
 type DashData struct {
@@ -51,6 +60,9 @@ type GoogleUser struct {
 
 var db *sql.DB
 var googleOAuthConfig *oauth2.Config
+var funcMap = template.FuncMap{
+	"contains": strings.Contains,
+}
 
 func initDB() {
 	connStr := os.Getenv("DATABASE_URL")
@@ -75,7 +87,6 @@ func initDB() {
 		google_id TEXT UNIQUE,
 		email TEXT
 	);`
-
 	_, err = db.Exec(createTable)
 	if err != nil {
 		panic(err)
@@ -87,8 +98,21 @@ func initDB() {
 		title TEXT NOT NULL,
 		content TEXT NOT NULL
 	);`
-
 	_, err = db.Exec(createNotes)
+	if err != nil {
+		panic(err)
+	}
+
+	createFiles := `CREATE TABLE IF NOT EXISTS note_files (
+		id SERIAL PRIMARY KEY,
+		note_id INTEGER REFERENCES notes(id) ON DELETE CASCADE,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		file_url TEXT NOT NULL,
+		file_name TEXT NOT NULL,
+		file_type TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT NOW()
+	);`
+	_, err = db.Exec(createFiles)
 	if err != nil {
 		panic(err)
 	}
@@ -119,11 +143,64 @@ func setUserCookie(w http.ResponseWriter, userID int) {
 	})
 }
 
+// uploadToSupabase uploads a file to Supabase Storage and returns the public URL
+func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (string, error) {
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseKey := os.Getenv("SUPABASE_KEY")
+	bucket := "note-files"
+
+	// Build the upload URL
+	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucket, fileName)
+
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(fileBytes))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+supabaseKey)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("x-upsert", "true") // overwrite if same name exists
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("supabase upload failed: %s", string(body))
+	}
+
+	// Build the public URL
+	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, bucket, fileName)
+	return publicURL, nil
+}
+
+// fetchNoteFiles fetches all files attached to a note
+func fetchNoteFiles(noteID int) []NoteFile {
+	rows, err := db.Query("SELECT id, file_url, file_name, file_type FROM note_files WHERE note_id = $1", noteID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var files []NoteFile
+	for rows.Next() {
+		var f NoteFile
+		rows.Scan(&f.ID, &f.FileURL, &f.FileName, &f.FileType)
+		files = append(files, f)
+	}
+	return files
+}
+
 func Home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
+
 	tmpl, err := template.ParseFiles("templates/manageAccount.html")
 	if err != nil {
 		http.Error(w, "Error Parsing File", http.StatusInternalServerError)
@@ -242,13 +319,11 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GoogleLogin redirects user to Google's consent screen
 func GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	url := googleOAuthConfig.AuthCodeURL("state-token", oauth2.AccessTypeOnline)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
-// GoogleCallback handles the response from Google after user consents
 func GoogleCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -256,14 +331,12 @@ func GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange code for token
 	token, err := googleOAuthConfig.Exchange(r.Context(), code)
 	if err != nil {
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
 
-	// Fetch user info from Google
 	client := googleOAuthConfig.Client(r.Context(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 	if err != nil {
@@ -284,21 +357,17 @@ func GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this Google account already exists in our database
 	var userID int
 	err = db.QueryRow("SELECT id FROM users WHERE google_id = $1", googleUser.ID).Scan(&userID)
 	if err == nil {
-		// User exists — log them in directly
 		setUserCookie(w, userID)
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
 	}
 
-	// New Google user — send them to pick a username
 	http.Redirect(w, r, "/auth/set-username?google_id="+googleUser.ID+"&email="+googleUser.Email, http.StatusSeeOther)
 }
 
-// SetUsername serves the username picker page for new Google users
 func SetUsername(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFiles("templates/setUsername.html")
 	if err != nil {
@@ -374,7 +443,11 @@ func DashBoard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := DashData{Username: username, Notes: notes}
-	tmpl, _ := template.ParseFiles("templates/DashBoard.html")
+	tmpl, err := template.New("DashBoard.html").Funcs(funcMap).ParseFiles("templates/DashBoard.html")
+	if err != nil {
+		http.Error(w, "Error parsing template", http.StatusInternalServerError)
+		return
+	}
 	tmpl.Execute(w, data)
 }
 
@@ -389,7 +462,8 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.ParseForm()
+	// Parse multipart form — 20MB max
+	r.ParseMultipartForm(20 << 20)
 
 	title := r.FormValue("title")
 	content := r.FormValue("note")
@@ -399,21 +473,59 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 		title = "Untitled note"
 	}
 
+	var savedNoteID int
+
 	if noteID != "" && noteID != "0" {
 		_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, noteID, cookie.Value)
 		if err != nil {
 			http.Error(w, "Error updating note: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		savedNoteID, _ = strconv.Atoi(noteID)
 	} else {
-		_, err = db.Exec("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3)", cookie.Value, title, content)
+		err = db.QueryRow("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3) RETURNING id", cookie.Value, title, content).Scan(&savedNoteID)
 		if err != nil {
 			http.Error(w, "Error saving note: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	// Handle file uploads if any
+	if r.MultipartForm != nil && r.MultipartForm.File != nil {
+		files := r.MultipartForm.File["files"]
+		for _, fileHeader := range files {
+			// Check file size — 10MB per file
+			if fileHeader.Size > 10<<20 {
+				continue
+			}
+
+			file, err := fileHeader.Open()
+			if err != nil {
+				continue
+			}
+			defer file.Close()
+
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				continue
+			}
+
+			contentType := fileHeader.Header.Get("Content-Type")
+			fileName := fmt.Sprintf("%d-%d-%s", savedNoteID, time.Now().UnixNano(), fileHeader.Filename)
+
+			publicURL, err := uploadToSupabase(fileBytes, fileName, contentType)
+			if err != nil {
+				continue
+			}
+
+			db.Exec(
+				"INSERT INTO note_files (note_id, user_id, file_url, file_name, file_type) VALUES ($1, $2, $3, $4, $5)",
+				savedNoteID, cookie.Value, publicURL, fileHeader.Filename, contentType,
+			)
+		}
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/note/%d", savedNoteID), http.StatusSeeOther)
 }
 
 func ViewNote(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +549,9 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch files for this note
+	activeNote.Files = fetchNoteFiles(activeNote.ID)
+
 	var username string
 	db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
 
@@ -459,7 +574,7 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 		Notes:      notes,
 		ActiveNote: activeNote,
 	}
-	tmpl, err := template.ParseFiles("templates/DashBoard.html")
+	tmpl, err := template.New("DashBoard.html").Funcs(funcMap).ParseFiles("templates/DashBoard.html")
 	if err != nil {
 		http.Error(w, "Error parsing template", http.StatusInternalServerError)
 		return
@@ -481,6 +596,30 @@ func DeleteNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+}
+
+func DeleteFile(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("user_id")
+	if err != nil {
+		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
+		return
+	}
+
+	idStr := strings.TrimPrefix(r.URL.Path, "/deletefile/")
+	parts := strings.SplitN(idStr, "/", 2)
+	if len(parts) != 2 {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	fileID, err := strconv.Atoi(parts[0])
+	noteID := parts[1]
+
+	if err == nil {
+		db.Exec("DELETE FROM note_files WHERE id = $1 AND user_id = $2", fileID, cookie.Value)
+	}
+
+	http.Redirect(w, r, "/note/"+noteID, http.StatusSeeOther)
 }
 
 func Logout(w http.ResponseWriter, r *http.Request) {
@@ -514,10 +653,9 @@ func main() {
 	http.HandleFunc("/savenote", SaveNote)
 	http.HandleFunc("/note/", ViewNote)
 	http.HandleFunc("/deletenote/", DeleteNote)
+	http.HandleFunc("/deletefile/", DeleteFile)
 	http.HandleFunc("/logout", Logout)
 	http.HandleFunc("/UnavailableFeatures", UnavailableFeatures)
-
-	// Google OAuth routes
 	http.HandleFunc("/auth/google/login", GoogleLogin)
 	http.HandleFunc("/auth/google/callback", GoogleCallback)
 	http.HandleFunc("/auth/set-username", SetUsername)
