@@ -31,7 +31,6 @@
             position: relative;
         }
 
-        /* ── MOBILE HEADER ── */
         .mobile-header {
             display: none;
             background-color: var(--sidebar-bg);
@@ -56,7 +55,6 @@
             gap: 6px;
         }
 
-        /* ── SIDEBAR ── */
         .sidebar {
             width: 260px;
             min-width: 260px;
@@ -126,9 +124,11 @@
 
         .note-item-wrapper {
             display: flex;
-            align-items: stretch;
+            align-items: center;
+            justify-content: space-between;
             border-bottom: 1px solid transparent;
             transition: background-color 0.15s;
+            padding-right: 0.75rem;
         }
 
         .note-item-wrapper:hover { background-color: var(--card-bg); }
@@ -168,12 +168,6 @@
             line-height: 1.5;
         }
 
-        .delete-form {
-            display: flex;
-            align-items: center;
-            padding-right: 0.75rem;
-        }
-
         .btn-delete-note {
             background: transparent;
             border: 1px solid transparent;
@@ -186,9 +180,9 @@
         }
 
         .btn-delete-note:hover {
-            background-color: var(--danger-dim) !important;
-            border-color: var(--danger) !important;
-            color: var(--danger) !important;
+            background-color: var(--danger-dim);
+            border-color: var(--danger);
+            color: var(--danger);
         }
 
         .empty-notes {
@@ -218,7 +212,6 @@
 
         .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
 
-        /* ── MAIN EDITOR ── */
         .main {
             flex: 1;
             display: flex;
@@ -290,7 +283,6 @@
 
         ::placeholder { color: var(--text-muted); opacity: 0.5; }
 
-        /* ── FILE UPLOAD SECTION ── */
         .file-upload-section {
             border-top: 1px solid var(--border);
             padding-top: 1.25rem;
@@ -368,7 +360,6 @@
             gap: 6px;
         }
 
-        /* ── ATTACHED FILES DISPLAY ── */
         .attached-files {
             display: flex;
             flex-direction: column;
@@ -432,7 +423,6 @@
             color: var(--danger);
         }
 
-        /* Media previews */
         .media-preview {
             width: 100%;
             border-radius: 8px;
@@ -442,7 +432,6 @@
             background: #000;
         }
 
-        /* Sidebar overlay */
         .sidebar-overlay {
             display: none;
             position: fixed;
@@ -451,7 +440,6 @@
             z-index: 90;
         }
 
-        /* ── DELETE NOTE MODAL ── */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -508,7 +496,6 @@
             font-weight: 600;
         }
 
-        /* ── RESPONSIVE ── */
         @media (max-width: 768px) {
             body { flex-direction: column; }
             .mobile-header { display: flex; }
@@ -530,10 +517,8 @@
 </head>
 <body>
 
-    <!-- OVERLAY FOR MOBILE SIDEBAR -->
     <div class="sidebar-overlay" onclick="closeSidebar()"></div>
 
-    <!-- DELETE NOTE MODAL -->
     <div class="modal-overlay" id="deleteModal">
         <div class="modal-box">
             <div class="modal-title">Delete Note</div>
@@ -545,13 +530,11 @@
         </div>
     </div>
 
-    <!-- MOBILE HEADER -->
     <div class="mobile-header">
         <button class="btn-icon" onclick="toggleSidebar()">☰ Notes</button>
         <button type="button" class="btn-save" onclick="document.getElementById('note-form').submit()">Save</button>
     </div>
 
-    <!-- SIDEBAR -->
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <span class="welcome">Signed in as</span>
@@ -570,9 +553,8 @@
                         <div class="note-item-title">{{.Title}}</div>
                         <div class="note-item-preview">{{.Content}}</div>
                     </a>
-                    <form action="/deletenote/{{.ID}}" method="POST" class="delete-form" id="delete-form-{{.ID}}">
-                        <button type="button" class="btn-delete-note" onclick="openDeleteModal('{{.ID}}')">Delete</button>
-                    </form>
+                    <!-- Removed inline form; trigger deletion using global detached form via JS modal -->
+                    <button type="button" class="btn-delete-note" onclick="openDeleteModal('{{.ID}}')">Delete</button>
                 </div>
                 {{end}}
             {{else}}
@@ -587,7 +569,6 @@
         </div>
     </aside>
 
-    <!-- MAIN EDITOR -->
     <main class="main">
         <form action="/savenote" method="POST" enctype="multipart/form-data" id="note-form" style="display:flex; flex-direction:column; height:100%;">
             <div class="editor-topbar">
@@ -598,40 +579,36 @@
                 <input type="text" name="title" class="title-input" placeholder="Untitled note" value="{{.ActiveNote.Title}}">
                 <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
 
-                <!-- ATTACHED FILES (only shown when viewing an existing note) -->
-                <!-- ATTACHED FILES DISPLAY -->
-{{if .ActiveNote.Files}}
-<div class="file-upload-section">
-    <span class="file-upload-label">Attached Files</span>
-    <div class="attached-files">
-        {{range .ActiveNote.Files}}
-        <div class="attached-file">
-            <span class="file-icon">
-                {{if contains .FileType "image"}}🖼️
-                {{else if contains .FileType "video"}}🎬
-                {{else if contains .FileType "audio"}}🎵
-                {{else}}📎{{end}}
-            </span>
-            <div class="file-info">
-                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
-                <div class="file-type-label">{{.FileType}}</div>
-            </div>
-            <!-- FIXED: Added form attribute referencing an external form ID -->
-            <button type="submit" form="delete-file-form-{{.ID}}" class="btn-delete-file">Remove</button>
-        </div>
-        {{if contains .FileType "image"}}
-        <img src="{{.FileURL}}" class="media-preview" alt="{{.FileName}}">
-        {{else if contains .FileType "video"}}
-        <video src="{{.FileURL}}" class="media-preview" controls></video>
-        {{else if contains .FileType "audio"}}
-        <audio src="{{.FileURL}}" controls style="width:100%; margin-top:0.25rem;"></audio>
-        {{end}}
-        {{end}}
-    </div>
-</div>
-{{end}}
+                {{if .ActiveNote.Files}}
+                <div class="file-upload-section">
+                    <span class="file-upload-label">Attached Files</span>
+                    <div class="attached-files">
+                        {{range .ActiveNote.Files}}
+                        <div class="attached-file">
+                            <span class="file-icon">
+                                {{if contains .FileType "image"}}🖼️
+                                {{else if contains .FileType "video"}}🎬
+                                {{else if contains .FileType "audio"}}🎵
+                                {{else}}📎{{end}}
+                            </span>
+                            <div class="file-info">
+                                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
+                                <div class="file-type-label">{{.FileType}}</div>
+                            </div>
+                            <button type="submit" form="delete-file-form-{{.ID}}" class="btn-delete-file">Remove</button>
+                        </div>
+                        {{if contains .FileType "image"}}
+                        <img src="{{.FileURL}}" class="media-preview" alt="{{.FileName}}">
+                        {{else if contains .FileType "video"}}
+                        <video src="{{.FileURL}}" class="media-preview" controls></video>
+                        {{else if contains .FileType "audio"}}
+                        <audio src="{{.FileURL}}" controls style="width:100%; margin-top:0.25rem;"></audio>
+                        {{end}}
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
 
-                <!-- FILE UPLOAD INPUT -->
                 <div class="file-upload-section">
                     <span class="file-upload-label">Add Files</span>
                     <div class="file-drop-zone">
@@ -647,10 +624,15 @@
             </div>
         </form>
 
+        <!-- STANDALONE DELETE NOTE FORMS (Safely extracted outside the main layout) -->
+        {{range .Notes}}
+        <form action="/deletenote/{{.ID}}" method="POST" id="delete-form-{{.ID}}" style="display:none;"></form>
+        {{end}}
+
         <!-- STANDALONE FILE DELETE FORMS -->
-    {{range .ActiveNote.Files}}
-    <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" id="delete-file-form-{{.ID}}" style="display:none;"></form>
-    {{end}}
+        {{range .ActiveNote.Files}}
+        <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" id="delete-file-form-{{.ID}}" style="display:none;"></form>
+        {{end}}
     </main>
 
     <script>
