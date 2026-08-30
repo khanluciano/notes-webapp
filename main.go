@@ -170,9 +170,8 @@ func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (st
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("supabase upload failed: %s", string(body))
+		return "", fmt.Errorf("supabase upload failed status %d: %s", resp.StatusCode, string(body))
 	}
-
 	// Build the public URL
 	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, bucket, fileName)
 	return publicURL, nil
@@ -515,7 +514,11 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 
 			publicURL, err := uploadToSupabase(fileBytes, fileName, contentType)
 			if err != nil {
-				continue
+				_, err := uploadToSupabase(fileBytes, fileName, contentType)
+				if err != nil {
+					fmt.Printf("Upload error: %v\n", err)
+					continue
+				}
 			}
 
 			db.Exec(
