@@ -537,16 +537,31 @@
                 <span class="file-upload-label">Attached Files</span>
                 <div class="attached-files">
                     {{range .ActiveNote.Files}}
-                    <div class="attached-file">
-                        <span class="file-icon">📎</span>
-                        <div class="file-info">
-                            <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
-                            <div class="file-type-label">{{.FileType}}</div>
+                    <div class="attached-file" style="flex-direction: column; align-items: stretch;">
+                        {{if contains .FileType "image"}}
+                        <img src="{{.FileURL}}" alt="{{.FileName}}" class="media-preview">
+                        {{else if contains .FileType "video"}}
+                        <video controls class="media-preview">
+                            <source src="{{.FileURL}}" type="{{.FileType}}">
+                            Your browser does not support video playback.
+                        </video>
+                        {{else if contains .FileType "audio"}}
+                        <audio controls style="width: 100%; margin-top: 0.25rem;">
+                            <source src="{{.FileURL}}" type="{{.FileType}}">
+                            Your browser does not support audio playback.
+                        </audio>
+                        {{end}}
+                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 0.5rem;">
+                            <span class="file-icon">📎</span>
+                            <div class="file-info">
+                                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
+                                <div class="file-type-label">{{.FileType}}</div>
+                            </div>
+                            <!-- Independent standalone form for deleting an individual file -->
+                            <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" style="margin:0;">
+                                <button type="submit" class="btn-delete-file">Remove</button>
+                            </form>
                         </div>
-                        <!-- Independent standalone form for deleting an individual file -->
-                        <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" style="margin:0;">
-                            <button type="submit" class="btn-delete-file">Remove</button>
-                        </form>
                     </div>
                     {{end}}
                 </div>

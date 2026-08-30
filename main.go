@@ -149,8 +149,13 @@ func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (st
 	supabaseKey := os.Getenv("SUPABASE_KEY")
 	bucket := "note-files"
 
+	if supabaseURL == "" || supabaseKey == "" {
+		return "", fmt.Errorf("SUPABASE_URL or SUPABASE_KEY environment variable is not set")
+	}
+
 	// Build the upload URL
 	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucket, fileName)
+	fmt.Printf("[Supabase] Uploading to: %s\n", uploadURL)
 
 	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(fileBytes))
 	if err != nil {
@@ -164,7 +169,7 @@ func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (st
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("supabase HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -174,6 +179,7 @@ func uploadToSupabase(fileBytes []byte, fileName string, contentType string) (st
 	}
 	// Build the public URL
 	publicURL := fmt.Sprintf("%s/storage/v1/object/public/%s/%s", supabaseURL, bucket, fileName)
+	fmt.Printf("[Supabase] Public URL: %s\n", publicURL)
 	return publicURL, nil
 }
 
@@ -655,6 +661,18 @@ func UnavailableFeatures(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 	initGoogleOAuth()
+
+	// Log Supabase config status for debugging
+	if os.Getenv("SUPABASE_URL") == "" {
+		fmt.Println("⚠️  WARNING: SUPABASE_URL is not set — file uploads will fail!")
+	} else {
+		fmt.Printf("✅ SUPABASE_URL is set: %s\n", os.Getenv("SUPABASE_URL"))
+	}
+	if os.Getenv("SUPABASE_KEY") == "" {
+		fmt.Println("⚠️  WARNING: SUPABASE_KEY is not set — file uploads will fail!")
+	} else {
+		fmt.Println("✅ SUPABASE_KEY is set")
+	}
 
 	http.HandleFunc("/", Home)
 	http.HandleFunc("/register", Register)
