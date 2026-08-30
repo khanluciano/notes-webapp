@@ -552,6 +552,8 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 	// Fetch files for this note
 	activeNote.Files = fetchNoteFiles(activeNote.ID)
 
+	fmt.Printf("Files for note %d: %+v\n", activeNote.ID, activeNote.Files)
+
 	var username string
 	db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
 
