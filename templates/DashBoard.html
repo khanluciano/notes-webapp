@@ -108,7 +108,6 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            transition: opacity 0.15s;
         }
 
         .btn-new-note:hover { opacity: 0.85; }
@@ -141,7 +140,6 @@
             border-left: 2px solid transparent;
             text-decoration: none;
             overflow: hidden;
-            transition: border-color 0.15s;
         }
 
         .note-item-wrapper:hover .note-item { border-left-color: var(--accent); }
@@ -207,7 +205,6 @@
             border-radius: 6px;
             font-size: 13px;
             cursor: pointer;
-            transition: border-color 0.15s, color 0.15s;
         }
 
         .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
@@ -239,7 +236,6 @@
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: opacity 0.15s;
         }
 
         .btn-save:hover { opacity: 0.85; }
@@ -263,7 +259,6 @@
             font-weight: 700;
             padding-bottom: 0.75rem;
             outline: none;
-            transition: border-color 0.2s;
         }
 
         .title-input:focus { border-color: var(--accent); }
@@ -305,7 +300,6 @@
             padding: 1.25rem;
             text-align: center;
             cursor: pointer;
-            transition: border-color 0.2s, background-color 0.2s;
             position: relative;
         }
 
@@ -323,31 +317,11 @@
             height: 100%;
         }
 
-        .file-drop-text {
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            pointer-events: none;
-        }
+        .file-drop-text { font-size: 0.85rem; color: var(--text-muted); pointer-events: none; }
+        .file-drop-text span { color: var(--accent); font-weight: 600; }
+        .file-drop-hint { font-size: 0.72rem; color: var(--text-muted); opacity: 0.6; margin-top: 4px; }
 
-        .file-drop-text span {
-            color: var(--accent);
-            font-weight: 600;
-        }
-
-        .file-drop-hint {
-            font-size: 0.72rem;
-            color: var(--text-muted);
-            opacity: 0.6;
-            margin-top: 4px;
-        }
-
-        .selected-files {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 0.25rem;
-        }
-
+        .selected-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0.25rem; }
         .selected-file-chip {
             background-color: var(--card-bg);
             border: 1px solid var(--border);
@@ -355,17 +329,9 @@
             padding: 4px 10px;
             font-size: 0.75rem;
             color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 6px;
         }
 
-        .attached-files {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
+        .attached-files { display: flex; flex-direction: column; gap: 0.5rem; }
         .attached-file {
             background-color: var(--card-bg);
             border: 1px solid var(--border);
@@ -376,16 +342,8 @@
             gap: 0.75rem;
         }
 
-        .file-icon {
-            font-size: 1.4rem;
-            flex-shrink: 0;
-        }
-
-        .file-info {
-            flex: 1;
-            overflow: hidden;
-        }
-
+        .file-icon { font-size: 1.4rem; flex-shrink: 0; }
+        .file-info { flex: 1; overflow: hidden; }
         .file-info a {
             font-size: 0.875rem;
             font-weight: 500;
@@ -396,14 +354,7 @@
             text-overflow: ellipsis;
             display: block;
         }
-
-        .file-info a:hover { text-decoration: underline; }
-
-        .file-type-label {
-            font-size: 0.7rem;
-            color: var(--text-muted);
-            margin-top: 2px;
-        }
+        .file-type-label { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
 
         .btn-delete-file {
             background: transparent;
@@ -414,9 +365,7 @@
             font-size: 11px;
             cursor: pointer;
             transition: all 0.15s;
-            flex-shrink: 0;
         }
-
         .btn-delete-file:hover {
             background-color: var(--danger-dim);
             border-color: var(--danger);
@@ -435,7 +384,7 @@
         .sidebar-overlay {
             display: none;
             position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
+            inset: 0;
             background: rgba(0, 0, 0, 0.6);
             z-index: 90;
         }
@@ -443,13 +392,12 @@
         .modal-overlay {
             display: none;
             position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
+            inset: 0;
             background: rgba(0, 0, 0, 0.7);
             align-items: center;
             justify-content: center;
             z-index: 200;
         }
-
         .modal-overlay.active { display: flex; }
 
         .modal-box {
@@ -459,22 +407,13 @@
             width: 90%;
             max-width: 400px;
             padding: 1.5rem;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
             display: flex;
             flex-direction: column;
             gap: 1rem;
         }
-
         .modal-title { font-size: 1.1rem; font-weight: 600; color: var(--text-main); }
         .modal-text { font-size: 0.9rem; color: var(--text-muted); line-height: 1.4; }
-
-        .modal-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-            margin-top: 0.5rem;
-        }
-
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 0.5rem; }
         .btn-modal-cancel {
             background: transparent;
             border: 1px solid var(--border);
@@ -484,7 +423,6 @@
             cursor: pointer;
             font-size: 0.85rem;
         }
-
         .btn-modal-confirm {
             background-color: var(--danger);
             border: none;
@@ -504,20 +442,17 @@
                 top: 0; left: 0; bottom: 0;
                 width: 280px;
                 transform: translateX(-100%);
-                box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
             }
             .sidebar.open { transform: translateX(0); }
             .sidebar-overlay.open { display: block; }
             .editor-topbar { display: none; }
             .editor-body { padding: 1.25rem 1rem; }
-            .title-input { font-size: 1.4rem; }
-            .note-textarea { font-size: 16px; }
         }
     </style>
 </head>
 <body>
 
-    <div class="sidebar-overlay" onclick="closeSidebar()"></div>
+    <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
 
     <div class="modal-overlay" id="deleteModal">
         <div class="modal-box">
@@ -553,7 +488,8 @@
                         <div class="note-item-title">{{.Title}}</div>
                         <div class="note-item-preview">{{.Content}}</div>
                     </a>
-                    <!-- Removed inline form; trigger deletion using global detached form via JS modal -->
+                    <!-- Independent inline form for note deletion -->
+                    <form action="/deletenote/{{.ID}}" method="POST" id="delete-form-{{.ID}}" style="display:none;"></form>
                     <button type="button" class="btn-delete-note" onclick="openDeleteModal('{{.ID}}')">Delete</button>
                 </div>
                 {{end}}
@@ -574,40 +510,11 @@
             <div class="editor-topbar">
                 <button type="submit" class="btn-save">Save note</button>
             </div>
+            
             <div class="editor-body">
                 <input type="hidden" name="note_id" value="{{.ActiveNote.ID}}">
                 <input type="text" name="title" class="title-input" placeholder="Untitled note" value="{{.ActiveNote.Title}}">
                 <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
-
-                {{if .ActiveNote.Files}}
-                <div class="file-upload-section">
-                    <span class="file-upload-label">Attached Files</span>
-                    <div class="attached-files">
-                        {{range .ActiveNote.Files}}
-                        <div class="attached-file">
-                            <span class="file-icon">
-                                {{if contains .FileType "image"}}🖼️
-                                {{else if contains .FileType "video"}}🎬
-                                {{else if contains .FileType "audio"}}🎵
-                                {{else}}📎{{end}}
-                            </span>
-                            <div class="file-info">
-                                <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
-                                <div class="file-type-label">{{.FileType}}</div>
-                            </div>
-                            <button type="submit" form="delete-file-form-{{.ID}}" class="btn-delete-file">Remove</button>
-                        </div>
-                        {{if contains .FileType "image"}}
-                        <img src="{{.FileURL}}" class="media-preview" alt="{{.FileName}}">
-                        {{else if contains .FileType "video"}}
-                        <video src="{{.FileURL}}" class="media-preview" controls></video>
-                        {{else if contains .FileType "audio"}}
-                        <audio src="{{.FileURL}}" controls style="width:100%; margin-top:0.25rem;"></audio>
-                        {{end}}
-                        {{end}}
-                    </div>
-                </div>
-                {{end}}
 
                 <div class="file-upload-section">
                     <span class="file-upload-label">Add Files</span>
@@ -620,18 +527,31 @@
                     </div>
                     <div class="selected-files" id="selected-files"></div>
                 </div>
-
             </div>
         </form>
 
-        <!-- STANDALONE DELETE NOTE FORMS (Safely extracted outside the main layout) -->
-        {{range .Notes}}
-        <form action="/deletenote/{{.ID}}" method="POST" id="delete-form-{{.ID}}" style="display:none;"></form>
-        {{end}}
-
-        <!-- STANDALONE FILE DELETE FORMS -->
-        {{range .ActiveNote.Files}}
-        <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" id="delete-file-form-{{.ID}}" style="display:none;"></form>
+        <!-- Attached Files Section (Outside main note form to prevent any nested-form issues) -->
+        {{if .ActiveNote.Files}}
+        <div style="padding: 0 2rem 2rem 2rem;">
+            <div class="file-upload-section">
+                <span class="file-upload-label">Attached Files</span>
+                <div class="attached-files">
+                    {{range .ActiveNote.Files}}
+                    <div class="attached-file">
+                        <span class="file-icon">📎</span>
+                        <div class="file-info">
+                            <a href="{{.FileURL}}" target="_blank">{{.FileName}}</a>
+                            <div class="file-type-label">{{.FileType}}</div>
+                        </div>
+                        <!-- Independent standalone form for deleting an individual file -->
+                        <form action="/deletefile/{{.ID}}/{{$.ActiveNote.ID}}" method="POST" style="margin:0;">
+                            <button type="submit" class="btn-delete-file">Remove</button>
+                        </form>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
         {{end}}
     </main>
 
@@ -659,17 +579,12 @@
             document.querySelector('.sidebar-overlay').classList.toggle('open');
         }
 
-        function closeSidebar() {
-            document.getElementById('sidebar').classList.remove('open');
-            document.querySelector('.sidebar-overlay').classList.remove('open');
-        }
-
         function clearEditor() {
             document.querySelector('input[name="note_id"]').value = '';
             document.querySelector('.title-input').value = '';
             document.querySelector('.note-textarea').value = '';
             document.getElementById('selected-files').innerHTML = '';
-            closeSidebar();
+            if (window.innerWidth <= 768) toggleSidebar();
             document.querySelector('.title-input').focus();
         }
 
@@ -684,6 +599,5 @@
             });
         }
     </script>
-
 </body>
 </html>
