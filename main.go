@@ -511,20 +511,21 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 
 			contentType := fileHeader.Header.Get("Content-Type")
 			fileName := fmt.Sprintf("%d-%d-%s", savedNoteID, time.Now().UnixNano(), fileHeader.Filename)
-
 			publicURL, err := uploadToSupabase(fileBytes, fileName, contentType)
 			if err != nil {
-				_, err := uploadToSupabase(fileBytes, fileName, contentType)
-				if err != nil {
-					fmt.Printf("Upload error: %v\n", err)
-					continue
-				}
+				fmt.Printf("Upload error: %v\n", err)
+				continue
 			}
 
-			db.Exec(
+			fmt.Printf("Uploaded to: %s\n", publicURL)
+
+			_, dbErr := db.Exec(
 				"INSERT INTO note_files (note_id, user_id, file_url, file_name, file_type) VALUES ($1, $2, $3, $4, $5)",
 				savedNoteID, cookie.Value, publicURL, fileHeader.Filename, contentType,
 			)
+			if dbErr != nil {
+				fmt.Printf("DB insert error: %v\n", dbErr)
+			}
 		}
 	}
 
