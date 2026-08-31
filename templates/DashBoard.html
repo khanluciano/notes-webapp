@@ -225,6 +225,175 @@
             justify-content: flex-end;
             align-items: center;
             gap: 0.75rem;
+            position: relative;
+        }
+
+        /* ---- Insert media dropdown ---- */
+        .insert-wrap { position: relative; display: flex; }
+
+        .btn-insert {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-insert:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-insert[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+
+        .insert-menu {
+            position: fixed;
+            min-width: 190px;
+            background-color: var(--sidebar-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 6px;
+            display: none;
+            flex-direction: column;
+            gap: 2px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+            z-index: 300;
+        }
+
+        .insert-menu.open { display: flex; }
+
+        .insert-menu button {
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            text-align: left;
+            padding: 10px 12px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .insert-menu button:hover,
+        .insert-menu button:focus-visible {
+            background-color: var(--accent-dim);
+            color: var(--accent);
+            outline: none;
+        }
+
+        .insert-status {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-right: auto;
+        }
+
+        .insert-status.error { color: var(--danger); }
+
+        /* ---- Inline media blocks inside the note body ---- */
+        .note-editor {
+            width: 100%;
+            flex: 1;
+            min-height: 300px;
+            background: transparent;
+            border: none;
+            color: var(--text-main);
+            font-size: 1rem;
+            line-height: 1.8;
+            outline: none;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .note-editor:empty::before {
+            content: attr(data-placeholder);
+            color: var(--text-muted);
+            opacity: 0.5;
+        }
+
+        .media-block {
+            display: block;
+            position: relative;
+            max-width: min(100%, 640px);
+            margin: 0.85rem 0;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background-color: var(--card-bg);
+            padding: 8px;
+            overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        .media-block.pressing { border-color: var(--accent); }
+        .media-block.armed { border-color: var(--danger); }
+
+        .media-block img,
+        .media-block video {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            max-height: 340px;
+            object-fit: contain;
+            border-radius: 6px;
+            background: #000;
+        }
+
+        .media-block audio {
+            display: block;
+            width: 100%;
+            min-width: 0;
+        }
+
+        .media-block .media-name {
+            display: block;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-top: 6px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Long-press overlay */
+        .media-actions {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.62);
+            border-radius: 10px;
+            z-index: 5;
+        }
+
+        .media-block.armed .media-actions { display: flex; }
+
+        .media-actions button {
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn-media-remove { background-color: var(--danger); border: none; color: #fff; }
+        .btn-media-cancel {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+        }
+
+        .media-caret {
+            display: block;
+            min-height: 1.8rem;
+            outline: none;
         }
 
         .btn-save {
@@ -262,19 +431,6 @@
         }
 
         .title-input:focus { border-color: var(--accent); }
-
-        .note-textarea {
-            width: 100%;
-            flex: 1;
-            min-height: 300px;
-            background: transparent;
-            border: none;
-            color: var(--text-main);
-            font-size: 1rem;
-            line-height: 1.8;
-            resize: none;
-            outline: none;
-        }
 
         ::placeholder { color: var(--text-muted); opacity: 0.5; }
 
@@ -467,7 +623,13 @@
 
     <div class="mobile-header">
         <button class="btn-icon" onclick="toggleSidebar()">☰ Notes</button>
-        <button type="button" class="btn-save" onclick="document.getElementById('note-form').submit()">Save</button>
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+            <div class="insert-wrap">
+                <button type="button" class="btn-icon" id="insert-btn-mobile"
+                        aria-haspopup="true" aria-expanded="false" aria-controls="insert-menu">+ Insert</button>
+            </div>
+            <button type="button" class="btn-save" onclick="submitNote()">Save</button>
+        </div>
     </div>
 
     <aside class="sidebar" id="sidebar">
@@ -486,7 +648,7 @@
                 <div class="note-item-wrapper {{if eq .ID $.ActiveNote.ID}}active{{end}}">
                     <a class="note-item" href="/note/{{.ID}}">
                         <div class="note-item-title">{{.Title}}</div>
-                        <div class="note-item-preview">{{.Content}}</div>
+                        <div class="note-item-preview">{{previewText .Content}}</div>
                     </a>
                     <!-- Independent inline form for note deletion -->
                     <form action="/deletenote/{{.ID}}" method="POST" id="delete-form-{{.ID}}" style="display:none;"></form>
@@ -508,13 +670,36 @@
     <main class="main">
         <form action="/savenote" method="POST" enctype="multipart/form-data" id="note-form" style="display:flex; flex-direction:column; height:100%;">
             <div class="editor-topbar">
+                <span class="insert-status" id="insert-status" role="status" aria-live="polite"></span>
+                <div class="insert-wrap">
+                    <!-- Top-right insert trigger for the active note workspace -->
+                    <button type="button" class="btn-insert" id="insert-btn"
+                            aria-haspopup="true" aria-expanded="false" aria-controls="insert-menu">+ Insert ▾</button>
+                </div>
                 <button type="submit" class="btn-save">Save note</button>
             </div>
-            
+
+            <!-- Shared dropdown; positioned in fixed coords next to whichever trigger opened it -->
+            <div class="insert-menu" id="insert-menu" role="menu" aria-labelledby="insert-btn">
+                <button type="button" role="menuitem" data-kind="audio">🎵 Insert Audio</button>
+                <button type="button" role="menuitem" data-kind="image">🖼️ Insert Image</button>
+                <button type="button" role="menuitem" data-kind="video">🎬 Insert Video</button>
+            </div>
+
+            <!-- One hidden picker per media kind so the native selector filters correctly -->
+            <input type="file" id="picker-audio" accept="audio/*" hidden>
+            <input type="file" id="picker-image" accept="image/*" hidden>
+            <input type="file" id="picker-video" accept="video/*" hidden>
+
             <div class="editor-body">
-                <input type="hidden" name="note_id" value="{{if .ActiveNote.ID}}{{.ActiveNote.ID}}{{end}}">
+                <input type="hidden" name="note_id" id="note-id" value="{{if .ActiveNote.ID}}{{.ActiveNote.ID}}{{end}}">
                 <input type="text" name="title" class="title-input" placeholder="Untitled note" value="{{.ActiveNote.Title}}">
-                <textarea name="note" class="note-textarea" placeholder="Start typing...">{{.ActiveNote.Content}}</textarea>
+
+                <!-- Rich body: plaintext + inline media blocks. Serialized into #note-content on submit. -->
+                <div class="note-editor" id="note-editor" contenteditable="true" role="textbox"
+                     aria-multiline="true" aria-label="Note content"
+                     data-placeholder="Start typing...">{{noteHTML .ActiveNote.Content}}</div>
+                <input type="hidden" name="note" id="note-content">
 
                 <div class="file-upload-section">
                     <span class="file-upload-label">Add Files</span>
@@ -606,12 +791,12 @@
                 window.location.href = '/dashboard';
                 return;
             }
-            const noteIdInput = document.querySelector('input[name="note_id"]');
+            const noteIdInput = document.getElementById('note-id');
             if (noteIdInput) noteIdInput.value = '';
             const titleInput = document.querySelector('.title-input');
             if (titleInput) titleInput.value = '';
-            const noteTextarea = document.querySelector('.note-textarea');
-            if (noteTextarea) noteTextarea.value = '';
+            const editor = document.getElementById('note-editor');
+            if (editor) editor.innerHTML = '';
             const selectedFiles = document.getElementById('selected-files');
             if (selectedFiles) selectedFiles.innerHTML = '';
             if (window.innerWidth <= 768) toggleSidebar();
@@ -628,6 +813,458 @@
                 container.appendChild(chip);
             });
         }
+
+        /* =====================================================================
+         * Media insert system + long-press removal
+         *
+         * State lives in the DOM (the contenteditable body is the source of
+         * truth) and is serialized into the hidden `note` field on submit,
+         * matching the existing form-post architecture. No extra libraries.
+         * ===================================================================== */
+        (function () {
+            const LONG_PRESS_MS = 600;
+            const MOVE_TOLERANCE = 10;   // px of drift allowed during a hold
+
+            const editor   = document.getElementById('note-editor');
+            const hidden   = document.getElementById('note-content');
+            const form     = document.getElementById('note-form');
+            const menu     = document.getElementById('insert-menu');
+            const status   = document.getElementById('insert-status');
+            const triggers = [
+                document.getElementById('insert-btn'),
+                document.getElementById('insert-btn-mobile')
+            ].filter(Boolean);
+
+            if (!editor || !form || !menu) return;
+
+            const pickers = {
+                audio: document.getElementById('picker-audio'),
+                image: document.getElementById('picker-image'),
+                video: document.getElementById('picker-video')
+            };
+
+            let savedRange = null;      // caret position captured before the file dialog
+            let activeTrigger = null;
+
+            /* ---------------- status line ---------------- */
+            let statusTimer = null;
+            function setStatus(msg, isError) {
+                if (!status) return;
+                status.textContent = msg || '';
+                status.classList.toggle('error', !!isError);
+                clearTimeout(statusTimer);
+                if (msg) {
+                    statusTimer = setTimeout(() => {
+                        status.textContent = '';
+                        status.classList.remove('error');
+                    }, isError ? 6000 : 3000);
+                }
+                // Errors must also surface on mobile, where the topbar is hidden.
+                if (isError && window.innerWidth <= 768) alert(msg);
+            }
+
+            /* ---------------- caret helpers ---------------- */
+            function saveCaret() {
+                const sel = window.getSelection();
+                if (sel && sel.rangeCount) {
+                    const range = sel.getRangeAt(0);
+                    if (editor.contains(range.commonAncestorContainer)) {
+                        savedRange = range.cloneRange();
+                        return;
+                    }
+                }
+                savedRange = null;
+            }
+
+            function caretRange() {
+                if (savedRange) return savedRange.cloneRange();
+                // No known caret: append at the end of the note.
+                const range = document.createRange();
+                range.selectNodeContents(editor);
+                range.collapse(false);
+                return range;
+            }
+
+            function placeCaret(node, atStart) {
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                range.collapse(!!atStart);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                savedRange = range.cloneRange();
+            }
+
+            editor.addEventListener('keyup', saveCaret);
+            editor.addEventListener('mouseup', saveCaret);
+            editor.addEventListener('focus', saveCaret);
+            document.addEventListener('selectionchange', () => {
+                const sel = window.getSelection();
+                if (sel && sel.rangeCount && editor.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+                    savedRange = sel.getRangeAt(0).cloneRange();
+                }
+            });
+
+            /* ---------------- dropdown ---------------- */
+            function positionMenu(trigger) {
+                const GAP = 6, PAD = 8;
+                menu.style.left = '0px';
+                menu.style.top = '0px';
+                const btn  = trigger.getBoundingClientRect();
+                const rect = menu.getBoundingClientRect();
+                const vw = window.innerWidth, vh = window.innerHeight;
+
+                // Right-align to the trigger, then clamp inside the viewport.
+                let left = btn.right - rect.width;
+                left = Math.min(left, vw - rect.width - PAD);
+                left = Math.max(PAD, left);
+
+                // Flip above the trigger when there isn't room below.
+                let top = btn.bottom + GAP;
+                if (top + rect.height > vh - PAD) {
+                    const above = btn.top - GAP - rect.height;
+                    top = above >= PAD ? above : Math.max(PAD, vh - rect.height - PAD);
+                }
+
+                menu.style.left = left + 'px';
+                menu.style.top = top + 'px';
+            }
+
+            function openMenu(trigger) {
+                activeTrigger = trigger;
+                saveCaret();
+                menu.classList.add('open');
+                positionMenu(trigger);
+                triggers.forEach(t => t.setAttribute('aria-expanded', String(t === trigger)));
+                const first = menu.querySelector('button');
+                if (first) first.focus();
+            }
+
+            function closeMenu(refocus) {
+                menu.classList.remove('open');
+                triggers.forEach(t => t.setAttribute('aria-expanded', 'false'));
+                if (refocus && activeTrigger) activeTrigger.focus();
+                activeTrigger = null;
+            }
+
+            const menuOpen = () => menu.classList.contains('open');
+
+            triggers.forEach(trigger => {
+                trigger.addEventListener('click', e => {
+                    e.preventDefault();
+                    menuOpen() && activeTrigger === trigger ? closeMenu(true) : openMenu(trigger);
+                });
+            });
+
+            document.addEventListener('click', e => {
+                if (!menuOpen()) return;
+                if (menu.contains(e.target) || triggers.some(t => t.contains(e.target))) return;
+                closeMenu(false);
+            });
+
+            document.addEventListener('keydown', e => {
+                if (e.key === 'Escape' && menuOpen()) closeMenu(true);
+            });
+
+            window.addEventListener('resize', () => { if (menuOpen()) positionMenu(activeTrigger); });
+            window.addEventListener('scroll', () => { if (menuOpen()) positionMenu(activeTrigger); }, true);
+
+            menu.querySelectorAll('button[data-kind]').forEach(item => {
+                item.addEventListener('click', () => {
+                    const kind = item.dataset.kind;
+                    closeMenu(false);
+                    const picker = pickers[kind];
+                    if (!picker) return;
+                    picker.value = '';           // allow re-picking the same file
+                    picker.click();              // native file system selector
+                });
+            });
+
+            /* ---------------- media block construction ---------------- */
+            function buildMediaBlock(kind, url, name, fileId) {
+                const block = document.createElement('div');
+                block.className = 'media-block';
+                block.setAttribute('contenteditable', 'false');
+                block.dataset.media = kind;
+                block.dataset.fileUrl = url;
+                if (name) block.dataset.fileName = name;
+                if (fileId) block.dataset.fileId = String(fileId);
+
+                let el;
+                if (kind === 'image') {
+                    el = document.createElement('img');
+                    el.src = url;
+                    el.alt = name || 'Inserted image';
+                    el.loading = 'lazy';
+                } else {
+                    el = document.createElement(kind === 'video' ? 'video' : 'audio');
+                    el.src = url;
+                    el.controls = true;
+                    el.preload = 'metadata';
+                    if (kind === 'video') el.setAttribute('playsinline', '');
+                }
+                block.appendChild(el);
+
+                if (name) {
+                    const label = document.createElement('span');
+                    label.className = 'media-name';
+                    label.textContent = name;
+                    block.appendChild(label);
+                }
+
+                block.appendChild(buildActions());
+                return block;
+            }
+
+            function buildActions() {
+                const overlay = document.createElement('div');
+                overlay.className = 'media-actions';
+                overlay.setAttribute('contenteditable', 'false');
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'btn-media-remove';
+                remove.dataset.action = 'remove-media';
+                remove.textContent = '🗑 Remove';
+
+                const cancel = document.createElement('button');
+                cancel.type = 'button';
+                cancel.className = 'btn-media-cancel';
+                cancel.dataset.action = 'cancel-media';
+                cancel.textContent = 'Cancel';
+
+                overlay.appendChild(remove);
+                overlay.appendChild(cancel);
+                return overlay;
+            }
+
+            // Inserts the block at the caret and leaves an editable line right
+            // below it so typing continues seamlessly on the same page.
+            function insertBlockAtCaret(block) {
+                const range = caretRange();
+                range.deleteContents();
+                range.insertNode(block);
+
+                let after = block.nextSibling;
+                const needsLine = !after ||
+                    (after.nodeType === 1 && after.classList && after.classList.contains('media-block'));
+                if (needsLine) {
+                    after = document.createElement('div');
+                    after.className = 'media-caret';
+                    after.appendChild(document.createElement('br'));
+                    block.parentNode.insertBefore(after, block.nextSibling);
+                }
+
+                editor.focus();
+                placeCaret(after, true);
+                block.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+
+            /* ---------------- upload flow ---------------- */
+            Object.keys(pickers).forEach(kind => {
+                const picker = pickers[kind];
+                if (!picker) return;
+                picker.addEventListener('change', async () => {
+                    const file = picker.files && picker.files[0];
+                    if (!file) return;
+                    if (file.size > 30 * 1024 * 1024) {
+                        setStatus(file.name + ' is larger than the 30MB limit.', true);
+                        picker.value = '';
+                        return;
+                    }
+
+                    setStatus('Uploading ' + file.name + '…');
+                    const body = new FormData();
+                    body.append('file', file);
+                    body.append('kind', kind);
+                    body.append('note_id', document.getElementById('note-id').value || '');
+
+                    try {
+                        const res = await fetch('/media/insert', {
+                            method: 'POST',
+                            body: body,
+                            credentials: 'same-origin'
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+                        insertBlockAtCaret(buildMediaBlock(data.kind || kind, data.url, data.name, data.id));
+                        setStatus('Inserted ' + (data.name || kind));
+                    } catch (err) {
+                        setStatus(err.message || 'Upload failed', true);
+                    } finally {
+                        picker.value = '';
+                    }
+                });
+            });
+
+            /* ---------------- long-press (hold to remove) ----------------
+             * A single pointer lifecycle handler covers mouse and touch:
+             * pointer events are used when available, with mouse/touch
+             * listeners as the fallback for older mobile browsers.
+             */
+            let pressTimer = null;
+            let pressBlock = null;
+            let pressStart = null;
+            let pressFired = false;
+
+            function disarmAll() {
+                editor.querySelectorAll('.media-block.armed').forEach(b => b.classList.remove('armed'));
+            }
+
+            function cancelPress() {
+                clearTimeout(pressTimer);
+                pressTimer = null;
+                if (pressBlock) pressBlock.classList.remove('pressing');
+                pressBlock = null;
+                pressStart = null;
+            }
+
+            function pressPoint(e) {
+                if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                if (e.changedTouches && e.changedTouches.length) {
+                    return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+                }
+                return { x: e.clientX, y: e.clientY };
+            }
+
+            function onPressStart(e) {
+                const block = e.target.closest ? e.target.closest('.media-block') : null;
+                if (!block || !editor.contains(block)) return;
+                // Let the overlay's own buttons handle their clicks.
+                if (e.target.closest('.media-actions')) return;
+
+                pressFired = false;
+                pressBlock = block;
+                pressStart = pressPoint(e);
+                block.classList.add('pressing');
+
+                pressTimer = setTimeout(() => {
+                    pressFired = true;
+                    disarmAll();
+                    block.classList.remove('pressing');
+                    block.classList.add('armed');
+                    pressBlock = null;
+                    if (navigator.vibrate) navigator.vibrate(15);
+                }, LONG_PRESS_MS);
+            }
+
+            function onPressMove(e) {
+                if (!pressBlock || !pressStart) return;
+                const p = pressPoint(e);
+                if (Math.abs(p.x - pressStart.x) > MOVE_TOLERANCE ||
+                    Math.abs(p.y - pressStart.y) > MOVE_TOLERANCE) {
+                    cancelPress();
+                }
+            }
+
+            function onPressEnd() { cancelPress(); }
+
+            if (window.PointerEvent) {
+                editor.addEventListener('pointerdown', onPressStart);
+                editor.addEventListener('pointermove', onPressMove);
+                editor.addEventListener('pointerup', onPressEnd);
+                editor.addEventListener('pointercancel', onPressEnd);
+                editor.addEventListener('pointerleave', onPressEnd);
+            } else {
+                editor.addEventListener('mousedown', onPressStart);
+                editor.addEventListener('mousemove', onPressMove);
+                editor.addEventListener('mouseup', onPressEnd);
+                editor.addEventListener('mouseleave', onPressEnd);
+                editor.addEventListener('touchstart', onPressStart, { passive: true });
+                editor.addEventListener('touchmove', onPressMove, { passive: true });
+                editor.addEventListener('touchend', onPressEnd);
+                editor.addEventListener('touchcancel', onPressEnd);
+            }
+
+            // Suppress the click/context menu that follows a completed hold.
+            editor.addEventListener('click', e => {
+                if (pressFired && !e.target.closest('.media-actions')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    pressFired = false;
+                }
+            }, true);
+
+            editor.addEventListener('contextmenu', e => {
+                if (e.target.closest('.media-block')) e.preventDefault();
+            });
+
+            // Overlay actions (delegated so dynamically inserted blocks work).
+            editor.addEventListener('click', async e => {
+                const btn = e.target.closest('[data-action]');
+                if (!btn) return;
+                e.preventDefault();
+                const block = btn.closest('.media-block');
+                if (!block) return;
+
+                if (btn.dataset.action === 'cancel-media') {
+                    block.classList.remove('armed');
+                    return;
+                }
+
+                if (btn.dataset.action === 'remove-media') {
+                    const fileId = block.dataset.fileId;
+                    const next = block.nextElementSibling;
+                    block.remove();                       // drop from the document structure
+                    if (next) placeCaret(next, true);
+                    else { editor.focus(); saveCaret(); }
+                    syncHidden();
+
+                    if (fileId) {
+                        // Best-effort storage cleanup; the block is already gone locally.
+                        try {
+                            await fetch('/media/delete', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                body: 'file_id=' + encodeURIComponent(fileId),
+                                credentials: 'same-origin'
+                            });
+                        } catch (err) { /* removal from the note already succeeded */ }
+                    }
+                    setStatus('Media removed');
+                }
+            });
+
+            // Clicking blank space below the content drops the caret at the end
+            // so users can keep typing after a trailing media block.
+            editor.addEventListener('click', e => {
+                if (e.target !== editor) return;
+                const last = editor.lastElementChild;
+                if (last && last.classList.contains('media-block')) {
+                    const line = document.createElement('div');
+                    line.className = 'media-caret';
+                    line.appendChild(document.createElement('br'));
+                    editor.appendChild(line);
+                    placeCaret(line, true);
+                }
+            });
+
+            /* ---------------- serialization ---------------- */
+            function syncHidden() {
+                // Overlays are pure UI; strip them from the persisted markup.
+                const clone = editor.cloneNode(true);
+                clone.querySelectorAll('.media-actions').forEach(n => n.remove());
+                clone.querySelectorAll('.media-block').forEach(n => n.removeAttribute('data-file-id'));
+                hidden.value = clone.innerHTML;
+            }
+
+            editor.addEventListener('input', () => { disarmAll(); syncHidden(); });
+            form.addEventListener('submit', syncHidden);
+            syncHidden();
+
+            // Re-attach overlays to blocks restored from the server.
+            editor.querySelectorAll('.media-block').forEach(block => {
+                block.setAttribute('contenteditable', 'false');
+                if (!block.querySelector('.media-actions')) block.appendChild(buildActions());
+            });
+
+            // Used by the mobile header save button.
+            window.submitNote = function () {
+                syncHidden();
+                form.requestSubmit ? form.requestSubmit() : form.submit();
+            };
+        })();
     </script>
 </body>
 </html>

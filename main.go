@@ -5,14 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"html"
+	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
-	"html/template"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -91,11 +93,245 @@ func isAudio(f NoteFile) bool {
 		strings.HasSuffix(fn, ".flac") || strings.HasSuffix(fn, ".aac")
 }
 
+// ---------------------------------------------------------------------------
+// Note content sanitizing / rendering
+//
+// Note bodies are now rich content (plaintext + inline media blocks) produced
+// by a contenteditable editor. Since the stored markup is echoed back into the
+// page, everything passes through a strict allowlist sanitizer: tags outside
+// the allowlist are escaped to text, and allowed tags are *rebuilt* from
+// scratch so raw attribute strings never reach the browser.
+// ---------------------------------------------------------------------------
+
+var (
+	noteTagRe   = regexp.MustCompile(`^</?([a-zA-Z][a-zA-Z0-9]*)([^<>]*?)/?>`)
+	noteAttrRe  = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+)))?`)
+	noteClassRe = regexp.MustCompile(`^[A-Za-z0-9 _-]*$`)
+	noteTypeRe  = regexp.MustCompile(`^[A-Za-z0-9._+/-]*$`)
+	stripTagsRe = regexp.MustCompile(`<[^>]*>`)
+)
+
+// allowedNoteAttrs maps allowed tag names to the attributes allowed on them.
+var allowedNoteAttrs = map[string]map[string]bool{
+	"p":          {},
+	"br":         {},
+	"b":          {},
+	"i":          {},
+	"u":          {},
+	"em":         {},
+	"strong":     {},
+	"ul":         {},
+	"ol":         {},
+	"li":         {},
+	"blockquote": {},
+	"h1":         {},
+	"h2":         {},
+	"h3":         {},
+	"span":       {"class": true},
+	"figure":     {"class": true},
+	"figcaption": {"class": true},
+	"div": {
+		"class":           true,
+		"contenteditable": true,
+		"data-media":      true,
+		"data-file-url":   true,
+		"data-file-name":  true,
+		"data-file-id":    true,
+	},
+	"img":    {"src": true, "alt": true, "class": true, "loading": true},
+	"video":  {"src": true, "class": true, "controls": true, "preload": true, "playsinline": true},
+	"audio":  {"src": true, "class": true, "controls": true, "preload": true},
+	"source": {"src": true, "type": true},
+}
+
+var noteVoidTags = map[string]bool{"br": true, "img": true, "source": true}
+
+var noteBoolAttrs = map[string]bool{"controls": true, "playsinline": true}
+
+// isSafeMediaURL only accepts http(s) or root-relative URLs, blocking
+// javascript:/data: schemes and quote characters that could break out of an
+// attribute value.
+func isSafeMediaURL(raw string) bool {
+	if strings.ContainsAny(raw, "\"'<>\x00\r\n\t") {
+		return false
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "/")
+}
+
+// sanitizeNoteAttr validates/normalizes a single attribute value.
+// The returned bool reports whether the attribute should be kept.
+func sanitizeNoteAttr(attr, val string) (string, bool) {
+	switch attr {
+	case "src", "data-file-url":
+		if !isSafeMediaURL(val) {
+			return "", false
+		}
+		return strings.TrimSpace(val), true
+	case "class":
+		if !noteClassRe.MatchString(val) {
+			return "", false
+		}
+		return val, true
+	case "type":
+		if !noteTypeRe.MatchString(val) {
+			return "", false
+		}
+		return val, true
+	case "contenteditable":
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "true" && v != "false" {
+			return "", false
+		}
+		return v, true
+	case "data-file-id":
+		// Numeric row id only, so it can be echoed into an attribute safely.
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err != nil || n <= 0 {
+			return "", false
+		}
+		return strings.TrimSpace(val), true
+	case "data-media":
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "image" && v != "video" && v != "audio" {
+			return "", false
+		}
+		return v, true
+	case "preload":
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "none" && v != "metadata" && v != "auto" {
+			return "", false
+		}
+		return v, true
+	case "loading":
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "lazy" && v != "eager" {
+			return "", false
+		}
+		return v, true
+	case "controls", "playsinline":
+		// Boolean attributes — value is dropped by the caller.
+		return "", true
+	}
+	// Remaining allowlisted attributes (alt, data-file-name) are plain text
+	// and get HTML-escaped when written back out.
+	return val, true
+}
+
+// sanitizeNoteHTML returns markup safe to embed directly in the editor.
+func sanitizeNoteHTML(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	var out strings.Builder
+	for i := 0; i < len(raw); {
+		next := strings.IndexByte(raw[i:], '<')
+		if next != 0 {
+			end := len(raw)
+			if next > 0 {
+				end = i + next
+			}
+			// Normalize entities so text is escaped exactly once.
+			out.WriteString(html.EscapeString(html.UnescapeString(raw[i:end])))
+			i = end
+			continue
+		}
+
+		m := noteTagRe.FindStringSubmatch(raw[i:])
+		if m == nil {
+			out.WriteString("&lt;")
+			i++
+			continue
+		}
+
+		full, name := m[0], strings.ToLower(m[1])
+		i += len(full)
+
+		attrsAllowed, ok := allowedNoteAttrs[name]
+		if !ok {
+			out.WriteString(html.EscapeString(full))
+			continue
+		}
+
+		if strings.HasPrefix(full, "</") {
+			if !noteVoidTags[name] {
+				out.WriteString("</" + name + ">")
+			}
+			continue
+		}
+
+		out.WriteString("<" + name)
+		for _, a := range noteAttrRe.FindAllStringSubmatch(m[2], -1) {
+			attr := strings.ToLower(a[1])
+			if !attrsAllowed[attr] {
+				continue
+			}
+			val := html.UnescapeString(a[2] + a[3] + a[4])
+			clean, keep := sanitizeNoteAttr(attr, val)
+			if !keep {
+				continue
+			}
+			if noteBoolAttrs[attr] {
+				out.WriteString(" " + attr)
+				continue
+			}
+			out.WriteString(" " + attr + `="` + html.EscapeString(clean) + `"`)
+		}
+		if noteVoidTags[name] {
+			out.WriteString(" />")
+		} else {
+			out.WriteString(">")
+		}
+	}
+
+	return out.String()
+}
+
+// renderNoteHTML is the template helper used to print a note body.
+func renderNoteHTML(raw string) template.HTML {
+	return template.HTML(sanitizeNoteHTML(raw))
+}
+
+// previewText flattens note markup into a short plaintext snippet for the
+// sidebar list.
+func previewText(raw string) string {
+	text := stripTagsRe.ReplaceAllString(raw, " ")
+	text = html.UnescapeString(text)
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 140 {
+		return strings.TrimSpace(string(runes[:140])) + "…"
+	}
+	return text
+}
+
+// mediaKindMatches verifies an uploaded file actually matches the requested
+// insert kind (image/video/audio).
+func mediaKindMatches(kind string, f NoteFile) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "image":
+		return isImage(f)
+	case "video":
+		return isVideo(f)
+	case "audio":
+		return isAudio(f)
+	}
+	return false
+}
+
 var funcMap = template.FuncMap{
-	"contains": strings.Contains,
-	"isImage":  isImage,
-	"isVideo":  isVideo,
-	"isAudio":  isAudio,
+	"contains":    strings.Contains,
+	"isImage":     isImage,
+	"isVideo":     isVideo,
+	"isAudio":     isAudio,
+	"noteHTML":    renderNoteHTML,
+	"previewText": previewText,
 }
 
 func initDB() {
@@ -148,6 +384,12 @@ func initDB() {
 	);`
 	if _, err = db.Exec(createFiles); err != nil {
 		log.Printf("Error creating note_files table: %v", err)
+	}
+
+	// "inline" marks files embedded directly in the note body (media blocks)
+	// so they are not duplicated in the legacy attachments list.
+	if _, err = db.Exec(`ALTER TABLE note_files ADD COLUMN IF NOT EXISTS inline BOOLEAN DEFAULT FALSE;`); err != nil {
+		log.Printf("Error adding inline column to note_files: %v", err)
 	}
 }
 
@@ -369,9 +611,31 @@ func deleteFromSupabase(fileURL string) {
 	}
 }
 
-// fetchNoteFiles fetches all files attached to a note
+// currentUserID resolves the authenticated user from the session cookie.
+// Returns 0 when the request is unauthenticated.
+func currentUserID(r *http.Request) int {
+	cookie, err := r.Cookie("user_id")
+	if err != nil || cookie.Value == "" {
+		return 0
+	}
+	id, err := strconv.Atoi(cookie.Value)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	var exists int
+	if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", id).Scan(&exists); err != nil {
+		return 0
+	}
+	return id
+}
+
+// fetchNoteFiles fetches the note's standalone attachments. Inline media
+// (blocks embedded in the note body) is excluded so it isn't rendered twice.
 func fetchNoteFiles(noteID int) []NoteFile {
-	rows, err := db.Query("SELECT id, file_url, file_name, file_type FROM note_files WHERE note_id = $1 ORDER BY id ASC", noteID)
+	rows, err := db.Query(
+		"SELECT id, file_url, file_name, file_type FROM note_files WHERE note_id = $1 AND COALESCE(inline, FALSE) = FALSE ORDER BY id ASC",
+		noteID,
+	)
 	if err != nil {
 		log.Printf("Error fetching files for note %d: %v", noteID, err)
 		return nil
@@ -686,7 +950,9 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	title := strings.TrimSpace(r.FormValue("title"))
-	content := r.FormValue("note")
+	// The body is rich content from the contenteditable editor; sanitize before
+	// it is ever persisted so stored markup is always trusted-by-construction.
+	content := sanitizeNoteHTML(r.FormValue("note"))
 	noteID := strings.TrimSpace(r.FormValue("note_id"))
 
 	if title == "" {
@@ -713,6 +979,15 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Error saving note: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+
+	// Inline media inserted before the note existed was stored with a NULL
+	// note_id; attach those rows now so cleanup/cascade works.
+	if _, err := db.Exec(
+		"UPDATE note_files SET note_id = $1 WHERE note_id IS NULL AND user_id = $2 AND inline = TRUE",
+		savedNoteID, cookie.Value,
+	); err != nil {
+		log.Printf("Error attaching inline files to note %d: %v", savedNoteID, err)
 	}
 
 	// Handle file uploads if any
@@ -882,6 +1157,163 @@ func DeleteFile(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/note/"+noteID, http.StatusSeeOther)
 }
 
+// ---------------------------------------------------------------------------
+// Inline media endpoints (used by the editor's "Insert" dropdown)
+// ---------------------------------------------------------------------------
+
+func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(payload)
+}
+
+// InsertMedia uploads a single image/video/audio file and returns its public
+// URL so the editor can embed it as an inline block at the caret.
+// Requires an authenticated session; a supplied note_id must belong to the user.
+func InsertMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Invalid method"})
+		return
+	}
+
+	userID := currentUserID(r)
+	if userID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Not signed in"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid upload"})
+		return
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(r.FormValue("kind")))
+	if kind != "image" && kind != "video" && kind != "audio" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Unsupported media kind"})
+		return
+	}
+
+	// A note_id of 0/"" means the note has not been persisted yet; the file is
+	// stored unattached and linked on the next save.
+	var noteID sql.NullInt64
+	if raw := strings.TrimSpace(r.FormValue("note_id")); raw != "" && raw != "0" {
+		id, err := strconv.Atoi(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid note"})
+			return
+		}
+		var owned int
+		if err := db.QueryRow("SELECT 1 FROM notes WHERE id = $1 AND user_id = $2", id, userID).Scan(&owned); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Note not found"})
+			return
+		}
+		noteID = sql.NullInt64{Int64: int64(id), Valid: true}
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No file provided"})
+		return
+	}
+	defer file.Close()
+
+	if header.Size == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Empty file"})
+		return
+	}
+	if header.Size > 30<<20 {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "File exceeds the 30MB limit"})
+		return
+	}
+
+	fileBytes, err := io.ReadAll(io.LimitReader(file, 30<<20))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not read file"})
+		return
+	}
+
+	contentType := header.Header.Get("Content-Type")
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(fileBytes)
+	}
+
+	// Confirm the file's real type matches what the user asked to insert.
+	if !mediaKindMatches(kind, NoteFile{FileName: header.Filename, FileType: contentType}) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "File does not look like a valid " + kind})
+		return
+	}
+
+	cleanName := sanitizeFileName(filepath.Base(header.Filename))
+	storedName := fmt.Sprintf("u%d_%d_%s", userID, time.Now().UnixNano(), cleanName)
+
+	publicURL, err := uploadToSupabase(fileBytes, storedName, contentType)
+	if err != nil {
+		log.Printf("Inline upload error for '%s': %v", header.Filename, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Upload failed, please try again"})
+		return
+	}
+
+	var fileID int
+	err = db.QueryRow(
+		"INSERT INTO note_files (note_id, user_id, file_url, file_name, file_type, inline) VALUES ($1, $2, $3, $4, $5, TRUE) RETURNING id",
+		noteID, userID, publicURL, header.Filename, contentType,
+	).Scan(&fileID)
+	if err != nil {
+		log.Printf("DB insert error for inline file '%s': %v", header.Filename, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not save file record"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":   fileID,
+		"url":  publicURL,
+		"name": header.Filename,
+		"type": contentType,
+		"kind": kind,
+	})
+}
+
+// DeleteMedia removes an inline media file (storage object + DB row) after the
+// user confirms deletion from the long-press overlay.
+func DeleteMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Invalid method"})
+		return
+	}
+
+	userID := currentUserID(r)
+	if userID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Not signed in"})
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+		return
+	}
+
+	fileID, err := strconv.Atoi(strings.TrimSpace(r.FormValue("file_id")))
+	if err != nil || fileID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid file id"})
+		return
+	}
+
+	var fileURL string
+	// Ownership is enforced by the user_id predicate.
+	if err := db.QueryRow("SELECT file_url FROM note_files WHERE id = $1 AND user_id = $2", fileID, userID).Scan(&fileURL); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "File not found"})
+		return
+	}
+
+	if _, err := db.Exec("DELETE FROM note_files WHERE id = $1 AND user_id = $2", fileID, userID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not delete file"})
+		return
+	}
+	deleteFromSupabase(fileURL)
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func Logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "user_id",
@@ -938,6 +1370,8 @@ func main() {
 	http.HandleFunc("/note/", ViewNote)
 	http.HandleFunc("/deletenote/", DeleteNote)
 	http.HandleFunc("/deletefile/", DeleteFile)
+	http.HandleFunc("/media/insert", InsertMedia)
+	http.HandleFunc("/media/delete", DeleteMedia)
 	http.HandleFunc("/logout", Logout)
 	http.HandleFunc("/UnavailableFeatures", UnavailableFeatures)
 	http.HandleFunc("/auth/google/login", GoogleLogin)
