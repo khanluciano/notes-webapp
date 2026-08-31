@@ -450,43 +450,6 @@
             letter-spacing: 0.06em;
         }
 
-        .file-drop-zone {
-            border: 1px dashed var(--border);
-            border-radius: 8px;
-            padding: 1.25rem;
-            text-align: center;
-            cursor: pointer;
-            position: relative;
-        }
-
-        .file-drop-zone:hover {
-            border-color: var(--accent);
-            background-color: var(--accent-dim);
-        }
-
-        .file-drop-zone input[type="file"] {
-            position: absolute;
-            inset: 0;
-            opacity: 0;
-            cursor: pointer;
-            width: 100%;
-            height: 100%;
-        }
-
-        .file-drop-text { font-size: 0.85rem; color: var(--text-muted); pointer-events: none; }
-        .file-drop-text span { color: var(--accent); font-weight: 600; }
-        .file-drop-hint { font-size: 0.72rem; color: var(--text-muted); opacity: 0.6; margin-top: 4px; }
-
-        .selected-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0.25rem; }
-        .selected-file-chip {
-            background-color: var(--card-bg);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 4px 10px;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-        }
-
         .attached-files { display: flex; flex-direction: column; gap: 0.5rem; }
         .attached-file {
             background-color: var(--card-bg);
@@ -668,7 +631,7 @@
     </aside>
 
     <main class="main">
-        <form action="/savenote" method="POST" enctype="multipart/form-data" id="note-form" style="display:flex; flex-direction:column; height:100%;">
+        <form action="/savenote" method="POST" id="note-form" style="display:flex; flex-direction:column; height:100%;">
             <div class="editor-topbar">
                 <span class="insert-status" id="insert-status" role="status" aria-live="polite"></span>
                 <div class="insert-wrap">
@@ -701,19 +664,9 @@
                      data-placeholder="Start typing...">{{noteHTML .ActiveNote.Content}}</div>
                 <input type="hidden" name="note" id="note-content">
 
-                <div class="file-upload-section">
-                    <span class="file-upload-label">Add Files</span>
-                    <div class="file-drop-zone">
-                        <input type="file" name="files" multiple accept="image/*,video/*,audio/*" onchange="showSelectedFiles(this)">
-                        <div class="file-drop-text">
-                            <span>Click to upload</span> or drag and drop
-                        </div>
-                        <div class="file-drop-hint">Images, videos, audio — max 30MB per file</div>
-                    </div>
-                    <div class="selected-files" id="selected-files"></div>
-                </div>
-
-                <!-- Attached Files Section inside scrollable editor-body -->
+                <!-- Legacy attachments from notes created before inline media
+                     insert. Renders nothing for new notes; kept so these files
+                     stay visible and removable. -->
                 {{if .ActiveNote.Files}}
                 <div class="file-upload-section" style="margin-top: 1rem;">
                     <span class="file-upload-label">Attached Files ({{len .ActiveNote.Files}})</span>
@@ -797,21 +750,8 @@
             if (titleInput) titleInput.value = '';
             const editor = document.getElementById('note-editor');
             if (editor) editor.innerHTML = '';
-            const selectedFiles = document.getElementById('selected-files');
-            if (selectedFiles) selectedFiles.innerHTML = '';
             if (window.innerWidth <= 768) toggleSidebar();
             if (titleInput) titleInput.focus();
-        }
-
-        function showSelectedFiles(input) {
-            const container = document.getElementById('selected-files');
-            container.innerHTML = '';
-            Array.from(input.files).forEach(file => {
-                const chip = document.createElement('div');
-                chip.className = 'selected-file-chip';
-                chip.textContent = file.name + ' (' + (file.size / 1024 / 1024).toFixed(1) + ' MB)';
-                container.appendChild(chip);
-            });
         }
 
         /* =====================================================================
