@@ -12,3 +12,6 @@ notes-webapp
 .vscode/
 .idea/
 .DS_Store
+
+# Local handoff / working notes
+HANDOFF.md

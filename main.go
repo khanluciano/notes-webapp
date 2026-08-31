@@ -2,7 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -64,6 +69,9 @@ type GoogleUser struct {
 
 var db *sql.DB
 var googleOAuthConfig *oauth2.Config
+
+// sessionSecret signs session cookies. See initSessionSecret.
+var sessionSecret []byte
 
 func isImage(f NoteFile) bool {
 	ft := strings.ToLower(f.FileType)
@@ -417,15 +425,94 @@ func initGoogleOAuth() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Sessions
+//
+// The session cookie carries "userID.expiryUnix.signature", where the
+// signature is HMAC-SHA256 over "userID.expiryUnix" keyed with sessionSecret.
+// The user id is therefore still readable by the client, but it cannot be
+// changed without invalidating the signature, so a visitor cannot claim
+// another account by editing the cookie.
+// ---------------------------------------------------------------------------
+
+const sessionCookieName = "session"
+const sessionTTL = 30 * 24 * time.Hour
+
+// initSessionSecret loads the signing key. SESSION_SECRET should be set in the
+// deployment environment: without it a random key is generated per process, so
+// every restart/redeploy invalidates all existing sessions.
+func initSessionSecret() {
+	if s := strings.TrimSpace(os.Getenv("SESSION_SECRET")); s != "" {
+		sessionSecret = []byte(s)
+		log.Println("✅ SESSION_SECRET is configured")
+		return
+	}
+
+	sessionSecret = make([]byte, 32)
+	if _, err := rand.Read(sessionSecret); err != nil {
+		log.Fatalf("Could not generate a session secret: %v", err)
+	}
+	log.Println("⚠️  SESSION_SECRET is NOT set — generated a temporary key; all users will be logged out on restart")
+}
+
+// signSession builds a signed token for the given user and expiry.
+func signSession(userID int, expiry time.Time) string {
+	payload := fmt.Sprintf("%d.%d", userID, expiry.Unix())
+	mac := hmac.New(sha256.New, sessionSecret)
+	mac.Write([]byte(payload))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payload + "." + sig
+}
+
+// parseSession verifies a token's signature and expiry, returning the user id
+// it authenticates. The bool reports whether the token is valid.
+func parseSession(token string) (int, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+
+	payload := parts[0] + "." + parts[1]
+	mac := hmac.New(sha256.New, sessionSecret)
+	mac.Write([]byte(payload))
+	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	// Constant-time comparison so the signature cannot be brute-forced by
+	// timing how long a mismatch takes to reject.
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
+		return 0, false
+	}
+
+	userID, err := strconv.Atoi(parts[0])
+	if err != nil || userID <= 0 {
+		return 0, false
+	}
+
+	expiry, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || time.Now().After(time.Unix(expiry, 0)) {
+		return 0, false
+	}
+
+	return userID, true
+}
+
+// useSecureCookies reports whether the app is served over HTTPS, so the Secure
+// flag is only set where it will not break local http development.
+func useSecureCookies() bool {
+	return os.Getenv("APP_URL") != "" || os.Getenv("RAILWAY_PUBLIC_DOMAIN") != ""
+}
+
 func setUserCookie(w http.ResponseWriter, userID int) {
+	expiry := time.Now().Add(sessionTTL)
 	http.SetCookie(w, &http.Cookie{
-		Name:     "user_id",
-		Value:    fmt.Sprintf("%d", userID),
+		Name:     sessionCookieName,
+		Value:    signSession(userID, expiry),
 		Path:     "/",
-		MaxAge:   30 * 24 * 60 * 60,
+		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
+		Secure:   useSecureCookies(),
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
+		Expires:  expiry,
 	})
 }
 
@@ -611,17 +698,20 @@ func deleteFromSupabase(fileURL string) {
 	}
 }
 
-// currentUserID resolves the authenticated user from the session cookie.
-// Returns 0 when the request is unauthenticated.
+// currentUserID resolves the authenticated user from the signed session
+// cookie. Returns 0 when the request is unauthenticated. This is the single
+// entry point every handler uses to identify the caller.
 func currentUserID(r *http.Request) int {
-	cookie, err := r.Cookie("user_id")
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return 0
 	}
-	id, err := strconv.Atoi(cookie.Value)
-	if err != nil || id <= 0 {
+	id, ok := parseSession(cookie.Value)
+	if !ok {
 		return 0
 	}
+	// Confirm the account still exists (it may have been deleted since the
+	// token was issued).
 	var exists int
 	if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", id).Scan(&exists); err != nil {
 		return 0
@@ -659,12 +749,9 @@ func Home(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect to dashboard if already authenticated
-	if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
-		var exists int
-		if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
-			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-			return
-		}
+	if currentUserID(r) != 0 {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
 	}
 
 	tmpl, err := template.ParseFiles("templates/manageAccount.html")
@@ -683,12 +770,9 @@ func Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
-		if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
-			var exists int
-			if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
-				http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-				return
-			}
+		if currentUserID(r) != 0 {
+			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+			return
 		}
 		tmpl.Execute(w, AuthData{ActiveTab: "right-panel-active"})
 		return
@@ -753,12 +837,9 @@ func SignIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
-		if cookie, err := r.Cookie("user_id"); err == nil && cookie.Value != "" {
-			var exists int
-			if err := db.QueryRow("SELECT 1 FROM users WHERE id = $1", cookie.Value).Scan(&exists); err == nil && exists == 1 {
-				http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-				return
-			}
+		if currentUserID(r) != 0 {
+			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+			return
 		}
 		username := r.URL.Query().Get("username")
 		tmpl.Execute(w, AuthData{Username: username})
@@ -896,20 +977,20 @@ func SetUsername(w http.ResponseWriter, r *http.Request) {
 }
 
 func DashBoard(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("user_id")
-	if err != nil {
+	userID := currentUserID(r)
+	if userID == 0 {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
 
 	var username string
-	err = db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
+	err := db.QueryRow("SELECT username FROM users WHERE id = $1", userID).Scan(&username)
 	if err != nil {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", cookie.Value)
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", userID)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
@@ -938,15 +1019,15 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
-	cookie, err := r.Cookie("user_id")
-	if err != nil {
+	userID := currentUserID(r)
+	if userID == 0 {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
 
-	// Parse multipart form — 32MB max
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
+		return
 	}
 
 	title := strings.TrimSpace(r.FormValue("title"))
@@ -964,7 +1045,9 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	if noteID != "" && noteID != "0" {
 		id, err := strconv.Atoi(noteID)
 		if err == nil {
-			_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, id, cookie.Value)
+			// The user_id predicate makes this a no-op for notes the caller
+			// does not own.
+			_, err = db.Exec("UPDATE notes SET title = $1, content = $2 WHERE id = $3 AND user_id = $4", title, content, id, userID)
 			if err != nil {
 				http.Error(w, "Error updating note: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -974,8 +1057,7 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if savedNoteID == 0 {
-		err = db.QueryRow("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3) RETURNING id", cookie.Value, title, content).Scan(&savedNoteID)
-		if err != nil {
+		if err := db.QueryRow("INSERT INTO notes (user_id, title, content) VALUES ($1, $2, $3) RETURNING id", userID, title, content).Scan(&savedNoteID); err != nil {
 			http.Error(w, "Error saving note: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -985,62 +1067,9 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 	// note_id; attach those rows now so cleanup/cascade works.
 	if _, err := db.Exec(
 		"UPDATE note_files SET note_id = $1 WHERE note_id IS NULL AND user_id = $2 AND inline = TRUE",
-		savedNoteID, cookie.Value,
+		savedNoteID, userID,
 	); err != nil {
 		log.Printf("Error attaching inline files to note %d: %v", savedNoteID, err)
-	}
-
-	// Handle file uploads if any
-	if r.MultipartForm != nil && r.MultipartForm.File != nil {
-		files := r.MultipartForm.File["files"]
-		for _, fileHeader := range files {
-			if fileHeader == nil || fileHeader.Filename == "" || fileHeader.Size == 0 {
-				continue
-			}
-
-			// Check file size — max 30MB per file
-			if fileHeader.Size > 30<<20 {
-				log.Printf("File '%s' exceeds max size of 30MB, skipping", fileHeader.Filename)
-				continue
-			}
-
-			file, err := fileHeader.Open()
-			if err != nil {
-				log.Printf("Error opening uploaded file '%s': %v", fileHeader.Filename, err)
-				continue
-			}
-
-			fileBytes, err := io.ReadAll(file)
-			file.Close()
-			if err != nil {
-				log.Printf("Error reading uploaded file '%s': %v", fileHeader.Filename, err)
-				continue
-			}
-
-			contentType := fileHeader.Header.Get("Content-Type")
-			if contentType == "" || contentType == "application/octet-stream" {
-				contentType = http.DetectContentType(fileBytes)
-			}
-
-			cleanName := sanitizeFileName(filepath.Base(fileHeader.Filename))
-			fileName := fmt.Sprintf("%d_%d_%s", savedNoteID, time.Now().UnixNano(), cleanName)
-
-			publicURL, err := uploadToSupabase(fileBytes, fileName, contentType)
-			if err != nil {
-				log.Printf("Upload error for '%s': %v", fileHeader.Filename, err)
-				continue
-			}
-
-			log.Printf("Uploaded '%s' -> %s", fileHeader.Filename, publicURL)
-
-			_, dbErr := db.Exec(
-				"INSERT INTO note_files (note_id, user_id, file_url, file_name, file_type) VALUES ($1, $2, $3, $4, $5)",
-				savedNoteID, cookie.Value, publicURL, fileHeader.Filename, contentType,
-			)
-			if dbErr != nil {
-				log.Printf("DB insert error for file '%s': %v", fileHeader.Filename, dbErr)
-			}
-		}
 	}
 
 	http.Redirect(w, r, fmt.Sprintf("/note/%d", savedNoteID), http.StatusSeeOther)
@@ -1048,8 +1077,8 @@ func SaveNote(w http.ResponseWriter, r *http.Request) {
 
 func ViewNote(w http.ResponseWriter, r *http.Request) {
 	var activeNote Note
-	cookie, err := r.Cookie("user_id")
-	if err != nil {
+	userID := currentUserID(r)
+	if userID == 0 {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
@@ -1061,7 +1090,7 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = db.QueryRow("SELECT id, title, content FROM notes WHERE user_id = $1 AND id = $2", cookie.Value, id).Scan(&activeNote.ID, &activeNote.Title, &activeNote.Content)
+	err = db.QueryRow("SELECT id, title, content FROM notes WHERE user_id = $1 AND id = $2", userID, id).Scan(&activeNote.ID, &activeNote.Title, &activeNote.Content)
 	if err != nil {
 		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		return
@@ -1071,9 +1100,9 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 	activeNote.Files = fetchNoteFiles(activeNote.ID)
 
 	var username string
-	db.QueryRow("SELECT username FROM users WHERE id = $1", cookie.Value).Scan(&username)
+	db.QueryRow("SELECT username FROM users WHERE id = $1", userID).Scan(&username)
 
-	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", cookie.Value)
+	rows, err := db.Query("SELECT id, title, content FROM notes WHERE user_id = $1 ORDER BY id DESC", userID)
 	if err != nil {
 		http.Error(w, "Error fetching notes", http.StatusInternalServerError)
 		return
@@ -1102,8 +1131,8 @@ func ViewNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteNote(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("user_id")
-	if err != nil {
+	userID := currentUserID(r)
+	if userID == 0 {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
@@ -1112,7 +1141,7 @@ func DeleteNote(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(idStr)
 	if err == nil {
 		// Clean up files in Supabase storage
-		rows, fErr := db.Query("SELECT file_url FROM note_files WHERE note_id = $1 AND user_id = $2", id, cookie.Value)
+		rows, fErr := db.Query("SELECT file_url FROM note_files WHERE note_id = $1 AND user_id = $2", id, userID)
 		if fErr == nil {
 			for rows.Next() {
 				var fURL string
@@ -1122,15 +1151,15 @@ func DeleteNote(w http.ResponseWriter, r *http.Request) {
 			}
 			rows.Close()
 		}
-		db.Exec("DELETE FROM notes WHERE id = $1 AND user_id = $2", id, cookie.Value)
+		db.Exec("DELETE FROM notes WHERE id = $1 AND user_id = $2", id, userID)
 	}
 
 	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 }
 
 func DeleteFile(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("user_id")
-	if err != nil {
+	userID := currentUserID(r)
+	if userID == 0 {
 		http.Redirect(w, r, "/SignIn", http.StatusSeeOther)
 		return
 	}
@@ -1147,11 +1176,11 @@ func DeleteFile(w http.ResponseWriter, r *http.Request) {
 
 	if err == nil {
 		var fileURL string
-		db.QueryRow("SELECT file_url FROM note_files WHERE id = $1 AND user_id = $2", fileID, cookie.Value).Scan(&fileURL)
+		db.QueryRow("SELECT file_url FROM note_files WHERE id = $1 AND user_id = $2", fileID, userID).Scan(&fileURL)
 		if fileURL != "" {
 			deleteFromSupabase(fileURL)
 		}
-		db.Exec("DELETE FROM note_files WHERE id = $1 AND user_id = $2", fileID, cookie.Value)
+		db.Exec("DELETE FROM note_files WHERE id = $1 AND user_id = $2", fileID, userID)
 	}
 
 	http.Redirect(w, r, "/note/"+noteID, http.StatusSeeOther)
@@ -1316,6 +1345,16 @@ func DeleteMedia(w http.ResponseWriter, r *http.Request) {
 
 func Logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   useSecureCookies(),
+		SameSite: http.SameSiteLaxMode,
+	})
+	// Clear the pre-signing cookie so old sessions cannot linger.
+	http.SetCookie(w, &http.Cookie{
 		Name:     "user_id",
 		Value:    "",
 		Path:     "/",
@@ -1337,6 +1376,7 @@ func UnavailableFeatures(w http.ResponseWriter, r *http.Request) {
 func main() {
 	initDB()
 	initGoogleOAuth()
+	initSessionSecret()
 	ensureSupabaseBucket()
 
 	// Diagnostic status logs for environment configuration
